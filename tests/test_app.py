@@ -1,0 +1,663 @@
+import io
+import sqlite3
+import tempfile
+import unittest
+from contextlib import closing
+from datetime import date
+from pathlib import Path
+from unittest.mock import patch
+
+from werkzeug.security import generate_password_hash
+
+from backend.app import MAX_FILE_SIZE, MAX_REQUEST_SIZE, create_app
+
+
+class LedgerAppTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.app = create_app(
+            {
+                "TESTING": True,
+                "SECRET_KEY": "test-secret-key",
+                "LEDGER_USERNAME": "operator",
+                "LEDGER_PASSWORD_HASH": generate_password_hash("correct horse battery"),
+                "DATABASE_PATH": str(Path(self.temp_dir.name) / "ledger.sqlite3"),
+                "SESSION_COOKIE_SECURE": False,
+            }
+        )
+        self.client = self.app.test_client()
+        response = self.client.get("/api/session")
+        self.csrf_token = response.json["csrfToken"]
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def login(self):
+        response = self.client.post(
+            "/api/login",
+            json={"username": "operator", "password": "correct horse battery"},
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.csrf_token = response.json["csrfToken"]
+
+    def record_data(self, **overrides):
+        data = {
+            "trialNo": "T-001",
+            "projectName": "試験案件",
+            "productNo": "A 12345",
+            "registrationDate": "20261025",
+            "manager": "山田太郎",
+        }
+        data.update(overrides)
+        return data
+
+    def test_homepage_requires_react_build_instead_of_legacy_html(self):
+        missing_build = Path(self.temp_dir.name) / "missing-dist"
+        self.app.config["FRONTEND_DIST_PATH"] = str(missing_build)
+
+        response = self.client.get("/")
+
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("npm run build", response.json["error"])
+
+    def test_homepage_serves_react_build_and_assets(self):
+        frontend_dist = Path(self.temp_dir.name) / "dist"
+        assets_dir = frontend_dist / "assets"
+        assets_dir.mkdir(parents=True)
+        (frontend_dist / "index.html").write_text(
+            '<script type="module" src="/assets/app.js"></script>',
+            encoding="utf-8",
+        )
+        (assets_dir / "app.js").write_text("React build", encoding="utf-8")
+        self.app.config["FRONTEND_DIST_PATH"] = str(frontend_dist)
+
+        page = self.client.get("/")
+
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("/assets/app.js", page.get_data(as_text=True))
+        page.close()
+        asset = self.client.get("/assets/app.js")
+        self.assertEqual(asset.status_code, 200)
+        self.assertEqual(asset.get_data(as_text=True), "React build")
+        asset.close()
+
+    def test_records_require_login_and_login_requires_csrf(self):
+        self.assertEqual(self.client.get("/api/records").status_code, 401)
+        self.assertEqual(self.client.get("/api/dashboard").status_code, 401)
+        response = self.client.post(
+            "/api/login",
+            json={"username": "operator", "password": "correct horse battery"},
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_register_and_search_shared_sqlite_records(self):
+        self.login()
+        response = self.client.post(
+            "/api/records",
+            data=self.record_data(),
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(len(self.client.get("/api/records").json), 1)
+        self.assertEqual(
+            len(self.client.get("/api/records?trialNo=T-*").json),
+            1,
+        )
+        self.assertEqual(
+            len(self.client.get("/api/records?trialNo=NO-MATCH").json),
+            0,
+        )
+        second_client = self.app.test_client()
+        second_csrf = second_client.get("/api/session").json["csrfToken"]
+        login_response = second_client.post(
+            "/api/login",
+            json={"username": "operator", "password": "correct horse battery"},
+            headers={"X-CSRF-Token": second_csrf},
+        )
+        self.assertEqual(login_response.status_code, 200)
+        self.assertEqual(len(second_client.get("/api/records").json), 1)
+
+    def test_jumper_checks_persist_and_are_independent(self):
+        self.login()
+        record_ids = [self.client.post(
+            "/api/records", data=self.record_data(),
+            headers={"X-CSRF-Token": self.csrf_token},
+        ).json["id"] for _ in range(2)]
+        url = f"/api/records/{record_ids[0]}/jumpers"
+        initial = self.client.get(url).json
+        self.assertEqual(initial, [
+            {"name": "W1", "setting": "1-2", "confirmed": False},
+            {"name": "W2", "setting": "1-2", "confirmed": False},
+        ])
+        saved = self.client.put(
+            f"{url}/W1", json={"confirmed": True},
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(saved.status_code, 200)
+        restarted = create_app(dict(self.app.config)).test_client()
+        with restarted.session_transaction() as session:
+            session["username"] = "operator"
+        checks = restarted.get(url).json
+        self.assertTrue(checks[0]["confirmed"])
+        self.assertFalse(checks[1]["confirmed"])
+        self.assertEqual(
+            self.client.get(f"/api/records/{record_ids[1]}/jumpers").json, initial,
+        )
+        self.client.put(
+            f"{url}/W1", json={"confirmed": False},
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(self.client.get(url).json, initial)
+        self.client.delete(
+            f"/api/records/{record_ids[0]}",
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        with closing(sqlite3.connect(self.app.config["DATABASE_PATH"])) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM jumper_checks").fetchone()[0], 0)
+
+    def test_jumper_checks_require_login_csrf_and_valid_input(self):
+        self.assertEqual(self.client.get("/api/records/1/jumpers").status_code, 401)
+        self.assertEqual(self.client.put("/api/records/1/jumpers/W1", json={"confirmed": True}).status_code, 401)
+        self.login()
+        record_id = self.client.post(
+            "/api/records", data=self.record_data(),
+            headers={"X-CSRF-Token": self.csrf_token},
+        ).json["id"]
+        url = f"/api/records/{record_id}/jumpers"
+        self.assertEqual(self.client.put(f"{url}/W1", json={"confirmed": True}).status_code, 400)
+        for payload in ({}, {"confirmed": "true"}, {"confirmed": 1}, []):
+            response = self.client.put(
+                f"{url}/W1", json=payload,
+                headers={"X-CSRF-Token": self.csrf_token},
+            )
+            self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.client.put(
+            f"{url}/W3", json={"confirmed": True},
+            headers={"X-CSRF-Token": self.csrf_token},
+        ).status_code, 404)
+        self.assertEqual(self.client.get("/api/records/99999/jumpers").status_code, 404)
+        self.assertEqual(self.client.put(
+            "/api/records/99999/jumpers/W1", json={"confirmed": True},
+            headers={"X-CSRF-Token": self.csrf_token},
+        ).status_code, 404)
+
+    def test_equipment_defaults_and_persistence(self):
+        self.login()
+        record_ids = [self.client.post(
+            "/api/records", data=self.record_data(),
+            headers={"X-CSRF-Token": self.csrf_token},
+        ).json["id"] for _ in range(2)]
+        url = f"/api/records/{record_ids[0]}/equipment"
+        equipment = self.client.get(url).json
+        self.assertEqual([row["name"] for row in equipment["boards"]], [
+            "PWS132-A", "PWM89-G0", "PWM85-A3", "INF265-B0",
+            "MDM91-D0", "INF271-B0", "INF267-A1",
+        ])
+        self.assertTrue(all(row["serialNumber"] == "" for row in equipment["boards"]))
+        self.assertEqual(equipment["instruments"], [
+            {"name": "", "managementNo": "", "testItems": ""} for _ in range(3)
+        ])
+        self.assertEqual(equipment["software"], [
+            {"name": "テストプロ", "sdFormat": "TEST0306", "version": "", "checksum": ""},
+            {"name": "PWM85 基板 FPGA", "sdFormat": "XPLD0885", "version": "", "checksum": ""},
+            {"name": "INF267 基板 FPGA", "sdFormat": "XPLD0856", "version": "", "checksum": ""},
+        ])
+        equipment["boards"][0]["serialNumber"] = "251100020A"
+        equipment["instruments"][0] = {"name": "オシロスコープ", "managementNo": "AA00432", "testItems": "B9, B10"}
+        equipment["software"][0].update(version="9055", checksum="CB2FA46")
+        response = self.client.put(url, json=equipment, headers={"X-CSRF-Token": self.csrf_token})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json, equipment)
+        restarted = create_app(dict(self.app.config)).test_client()
+        with restarted.session_transaction() as session:
+            session["username"] = "operator"
+        self.assertEqual(restarted.get(url).json, equipment)
+        self.assertEqual(self.client.get(f"/api/records/{record_ids[1]}/equipment").json["boards"][0]["serialNumber"], "")
+        equipment["boards"][0]["serialNumber"] = ""
+        self.assertEqual(self.client.put(url, json=equipment, headers={"X-CSRF-Token": self.csrf_token}).status_code, 200)
+        self.assertEqual(self.client.get(url).json["boards"][0]["serialNumber"], "")
+        self.client.delete(f"/api/records/{record_ids[0]}", headers={"X-CSRF-Token": self.csrf_token})
+        with closing(sqlite3.connect(self.app.config["DATABASE_PATH"])) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM record_equipment").fetchone()[0], 0)
+
+    def test_equipment_requires_authentication_and_valid_fields(self):
+        self.assertEqual(self.client.get("/api/records/1/equipment").status_code, 401)
+        self.assertEqual(self.client.put("/api/records/1/equipment", json={}).status_code, 401)
+        self.login()
+        record_id = self.client.post(
+            "/api/records", data=self.record_data(),
+            headers={"X-CSRF-Token": self.csrf_token},
+        ).json["id"]
+        url = f"/api/records/{record_id}/equipment"
+        initial = self.client.get(url).json
+        self.assertEqual(self.client.put(url, json=initial).status_code, 400)
+        invalid_payloads = [{}, [], {**initial, "boards": []}]
+        for group, field, value in (
+            ("boards", "name", "OTHER"), ("boards", "serialNumber", 123),
+            ("instruments", "name", "a" * 101), ("software", "sdFormat", "OTHER"),
+            ("software", "name", "OTHER"), ("software", "version", None),
+        ):
+            payload = self.client.get(url).json
+            payload[group][0][field] = value
+            invalid_payloads.append(payload)
+        for payload in invalid_payloads:
+            self.assertEqual(self.client.put(url, json=payload, headers={"X-CSRF-Token": self.csrf_token}).status_code, 400)
+        self.assertEqual(self.client.get(url).json, initial)
+        self.assertEqual(self.client.get("/api/records/99999/equipment").status_code, 404)
+        self.assertEqual(self.client.put("/api/records/99999/equipment", json=initial, headers={"X-CSRF-Token": self.csrf_token}).status_code, 404)
+
+    def test_rejects_record_write_without_csrf(self):
+        self.login()
+        response = self.client.post(
+            "/api/records",
+            data=self.record_data(),
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_delete_record_requires_login_and_csrf(self):
+        self.assertEqual(self.client.delete("/api/records/1").status_code, 401)
+
+        self.login()
+        created = self.client.post(
+            "/api/records",
+            data=self.record_data(),
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(created.status_code, 201)
+        record_id = created.json["id"]
+
+        response = self.client.delete(f"/api/records/{record_id}")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(len(self.client.get("/api/records").json), 1)
+
+    def test_delete_record_removes_record_and_attachments(self):
+        self.login()
+        response = self.client.post(
+            "/api/records",
+            data={
+                **self.record_data(),
+                "resultFile": (io.BytesIO(b"test result"), "result.txt"),
+            },
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(response.status_code, 201)
+        record_id = response.json["id"]
+        record = self.client.get("/api/records").json[0]
+        file_id = record["files"][0]["id"]
+
+        deleted = self.client.delete(
+            f"/api/records/{record_id}",
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+
+        self.assertEqual(deleted.status_code, 200)
+        self.assertEqual(deleted.json, {"success": True})
+        self.assertEqual(self.client.get("/api/records").json, [])
+        self.assertEqual(
+            self.client.get(f"/api/records/{record_id}/files/{file_id}").status_code,
+            404,
+        )
+        self.assertEqual(
+            self.client.delete(
+                f"/api/records/{record_id}",
+                headers={"X-CSRF-Token": self.csrf_token},
+            ).status_code,
+            404,
+        )
+
+    def test_update_record_changes_fields_and_manages_attachments(self):
+        self.login()
+        created = self.client.post(
+            "/api/records",
+            data={
+                **self.record_data(),
+                "resultFiles": [
+                    (io.BytesIO(b"first content"), "first.txt"),
+                    (io.BytesIO(b"kept content"), "kept.txt"),
+                ],
+            },
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(created.status_code, 201)
+        record_id = created.json["id"]
+        original = self.client.get("/api/records").json[0]
+        first_file_id = original["files"][0]["id"]
+
+        updated = self.client.put(
+            f"/api/records/{record_id}",
+            data={
+                **self.record_data(
+                    trialNo="T-UPDATED",
+                    projectName="変更案件",
+                    productNo="B 54321",
+                    registrationDate="20261101",
+                    manager="佐藤花子",
+                ),
+                "removeFileIds": str(first_file_id),
+                "resultFiles": (io.BytesIO(b"new content"), "new.txt"),
+            },
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+
+        self.assertEqual(updated.status_code, 200)
+        record = self.client.get("/api/records").json[0]
+        self.assertEqual(record["trialNo"], "T-UPDATED")
+        self.assertEqual(record["projectName"], "変更案件")
+        self.assertEqual(record["productNo"], "B 54321")
+        self.assertEqual(record["registrationDate"], "20261101")
+        self.assertEqual(record["manager"], "佐藤花子")
+        self.assertEqual(
+            [file["fileName"] for file in record["files"]],
+            ["kept.txt", "new.txt"],
+        )
+        self.assertEqual(
+            self.client.get(
+                f"/api/records/{record_id}/files/{record['files'][0]['id']}"
+            ).data,
+            b"kept content",
+        )
+
+    def test_invalid_record_update_leaves_record_and_files_unchanged(self):
+        self.login()
+        created = self.client.post(
+            "/api/records",
+            data={
+                **self.record_data(),
+                "resultFile": (io.BytesIO(b"original"), "original.txt"),
+            },
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(created.status_code, 201)
+        record_id = created.json["id"]
+
+        response = self.client.put(
+            f"/api/records/{record_id}",
+            data={
+                **self.record_data(trialNo="T-CHANGED", registrationDate="20260230"),
+                "resultFiles": (io.BytesIO(b"new"), "new.txt"),
+            },
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        record = self.client.get("/api/records").json[0]
+        self.assertEqual(record["trialNo"], "T-001")
+        self.assertEqual([file["fileName"] for file in record["files"]], ["original.txt"])
+
+    def test_update_record_requires_login_and_csrf(self):
+        self.assertEqual(self.client.put("/api/records/1").status_code, 401)
+
+        self.login()
+        created = self.client.post(
+            "/api/records",
+            data=self.record_data(),
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(created.status_code, 201)
+
+        response = self.client.put(
+            f"/api/records/{created.json['id']}",
+            data=self.record_data(trialNo="T-CHANGED"),
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.client.get("/api/records").json[0]["trialNo"], "T-001")
+
+        missing_record = self.client.put(
+            "/api/records/99999",
+            data=self.record_data(),
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(missing_record.status_code, 404)
+
+    def test_update_rejects_attachment_from_another_record(self):
+        self.login()
+        first = self.client.post(
+            "/api/records",
+            data={
+                **self.record_data(trialNo="T-FIRST"),
+                "resultFile": (io.BytesIO(b"first"), "first.txt"),
+            },
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        second = self.client.post(
+            "/api/records",
+            data={
+                **self.record_data(trialNo="T-SECOND"),
+                "resultFile": (io.BytesIO(b"second"), "second.txt"),
+            },
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 201)
+        second_file_id = self.client.get("/api/records").json[0]["files"][0]["id"]
+
+        response = self.client.put(
+            f"/api/records/{first.json['id']}",
+            data={
+                **self.record_data(trialNo="T-CHANGED"),
+                "removeFileIds": str(second_file_id),
+            },
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        records = {record["trialNo"]: record for record in self.client.get("/api/records").json}
+        self.assertEqual(
+            [file["fileName"] for file in records["T-FIRST"]["files"]],
+            ["first.txt"],
+        )
+        self.assertEqual(
+            [file["fileName"] for file in records["T-SECOND"]["files"]],
+            ["second.txt"],
+        )
+
+    def test_rejects_invalid_calendar_date(self):
+        self.login()
+        response = self.client.post(
+            "/api/records",
+            data=self.record_data(registrationDate="20260230"),
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.client.get("/api/records").json, [])
+
+    def test_dashboard_summary_shows_totals_and_latest_record(self):
+        self.login()
+        empty_summary = self.client.get("/api/dashboard").json
+        self.assertEqual(empty_summary["totalRecords"], 0)
+        self.assertEqual(empty_summary["monthRecords"], 0)
+        self.assertIsNone(empty_summary["latestRecord"])
+
+        today = date.today().strftime("%Y%m%d")
+        response = self.client.post(
+            "/api/records",
+            data=self.record_data(
+                trialNo="T-DASH",
+                productNo="DASH-123",
+                registrationDate=today,
+            ),
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(response.status_code, 201)
+
+        summary = self.client.get("/api/dashboard").json
+        self.assertEqual(summary["totalRecords"], 1)
+        self.assertEqual(summary["monthRecords"], 1)
+        self.assertEqual(
+            summary["currentMonth"],
+            f"{today[:4]}年{int(today[4:6])}月",
+        )
+        self.assertEqual(summary["latestRecord"]["trialNo"], "T-DASH")
+        self.assertEqual(summary["latestRecord"]["productNo"], "DASH-123")
+
+    def test_accepts_cjk_compatibility_ideograph_in_manager(self):
+        self.login()
+        response = self.client.post(
+            "/api/records",
+            data=self.record_data(manager="山﨑修"),
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(
+            self.client.get("/api/records").json[0]["manager"],
+            "山﨑修",
+        )
+
+    def test_file_is_downloadable_only_after_login(self):
+        self.login()
+        response = self.client.post(
+            "/api/records",
+            data={
+                **self.record_data(),
+                "resultFile": (io.BytesIO(b"test result"), "result.txt"),
+            },
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(response.status_code, 201)
+        record_id = response.json["id"]
+        self.assertEqual(
+            self.client.get(f"/api/records/{record_id}/file").data,
+            b"test result",
+        )
+        self.client.post(
+            "/api/logout",
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(
+            self.client.get(f"/api/records/{record_id}/file").status_code,
+            401,
+        )
+
+    def test_registers_and_downloads_multiple_files(self):
+        self.login()
+        response = self.client.post(
+            "/api/records",
+            data={
+                **self.record_data(),
+                "resultFiles": [
+                    (io.BytesIO(b"first result"), "first.txt"),
+                    (io.BytesIO(b"second result"), "second.txt"),
+                ],
+            },
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(response.status_code, 201)
+        record_id = response.json["id"]
+        record = self.client.get("/api/records").json[0]
+        self.assertEqual(
+            [item["fileName"] for item in record["files"]],
+            ["first.txt", "second.txt"],
+        )
+        self.assertEqual(
+            self.client.get(
+                f"/api/records/{record_id}/files/{record['files'][0]['id']}"
+            ).data,
+            b"first result",
+        )
+        self.assertEqual(
+            self.client.get(
+                f"/api/records/{record_id}/files/{record['files'][1]['id']}"
+            ).data,
+            b"second result",
+        )
+        self.assertEqual(
+            self.client.get(f"/api/records/{record_id}/file").data,
+            b"first result",
+        )
+
+    def test_rejects_attachments_over_the_combined_size_limit(self):
+        self.login()
+        with patch("backend.app.MAX_TOTAL_FILE_SIZE", 5):
+            response = self.client.post(
+                "/api/records",
+                data={
+                    **self.record_data(),
+                    "resultFiles": [
+                        (io.BytesIO(b"123"), "first.txt"),
+                        (io.BytesIO(b"456"), "second.txt"),
+                    ],
+                },
+                headers={"X-CSRF-Token": self.csrf_token},
+            )
+
+        self.assertEqual(response.status_code, 413)
+        self.assertIn("合計", response.json["error"])
+        self.assertEqual(self.client.get("/api/records").json, [])
+
+    def test_existing_single_file_is_migrated_to_attachments(self):
+        database_path = self.app.config["DATABASE_PATH"]
+        with closing(sqlite3.connect(database_path)) as connection, connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO records (
+                    trial_no, project_name, product_no, registration_date,
+                    manager, file_name, file_content_type, file_data
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "T-OLD",
+                    "旧データ",
+                    "OLD-001",
+                    "20261025",
+                    "山田太郎",
+                    "old.txt",
+                    "text/plain",
+                    b"legacy result",
+                ),
+            )
+            record_id = cursor.lastrowid
+
+        migrated_app = create_app(
+            {
+                "TESTING": True,
+                "SECRET_KEY": "test-secret-key",
+                "LEDGER_USERNAME": "operator",
+                "LEDGER_PASSWORD_HASH": generate_password_hash("correct horse battery"),
+                "DATABASE_PATH": database_path,
+                "SESSION_COOKIE_SECURE": False,
+            }
+        )
+        client = migrated_app.test_client()
+        csrf_token = client.get("/api/session").json["csrfToken"]
+        login_response = client.post(
+            "/api/login",
+            json={"username": "operator", "password": "correct horse battery"},
+            headers={"X-CSRF-Token": csrf_token},
+        )
+        self.assertEqual(login_response.status_code, 200)
+
+        record = client.get("/api/records").json[0]
+        self.assertEqual(record["files"][0]["fileName"], "old.txt")
+        file_id = record["files"][0]["id"]
+        self.assertEqual(
+            client.get(f"/api/records/{record_id}/files/{file_id}").data,
+            b"legacy result",
+        )
+        with closing(sqlite3.connect(database_path)) as connection:
+            legacy_data = connection.execute(
+                "SELECT file_data FROM records WHERE id = ?",
+                (record_id,),
+            ).fetchone()[0]
+        self.assertIsNone(legacy_data)
+
+    def test_rejects_oversized_attachment(self):
+        self.login()
+        self.assertEqual(MAX_FILE_SIZE, 100 * 1024 * 1024)
+        self.assertGreater(MAX_REQUEST_SIZE, MAX_FILE_SIZE)
+        response = self.client.post(
+            "/api/records",
+            data={
+                **self.record_data(),
+                "resultFile": (io.BytesIO(b"x" * (MAX_FILE_SIZE + 1)), "large.bin"),
+            },
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(response.status_code, 413)
+        self.assertEqual(self.client.get("/api/records").json, [])
+
+
+if __name__ == "__main__":
+    unittest.main()

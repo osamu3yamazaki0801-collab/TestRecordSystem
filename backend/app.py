@@ -227,6 +227,9 @@ def create_app(test_config=None):
         values = {}
         for field, (max_length, pattern, message) in fields.items():
             value = form.get(field, "")
+            if field in {"projectName", "productNo"} and not value.strip():
+                values[field] = ""
+                continue
             error = validate_text(value, max_length, pattern, message)
             if error:
                 return None, None, None, (error, 400)
@@ -477,8 +480,10 @@ def create_app(test_config=None):
             return jsonify(result)
 
         uploads = request.files.getlist("resultFiles") or request.files.getlist("resultFile")
+        form = request.form.copy()
+        form.setdefault("registrationDate", date.today().strftime("%Y%m%d"))
         values, registration_date, files, error = parse_record_submission(
-            request.form,
+            form,
             uploads,
         )
         if error:

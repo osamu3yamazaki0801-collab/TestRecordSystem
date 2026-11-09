@@ -118,6 +118,64 @@ class LedgerAppTests(unittest.TestCase):
         self.assertEqual(login_response.status_code, 200)
         self.assertEqual(len(second_client.get("/api/records").json), 1)
 
+    def test_minimal_registration_and_later_details_update(self):
+        self.login()
+        response = self.client.post(
+            "/api/records",
+            data={"trialNo": "T-MINIMAL", "manager": "山田太郎"},
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(response.status_code, 201)
+        record_id = response.json["id"]
+        record = self.client.get("/api/records").json[0]
+        self.assertEqual(record["id"], record_id)
+        self.assertEqual(record["trialNo"], "T-MINIMAL")
+        self.assertEqual(record["manager"], "山田太郎")
+        self.assertEqual(record["projectName"], "")
+        self.assertEqual(record["productNo"], "")
+        self.assertEqual(record["registrationDate"], date.today().strftime("%Y%m%d"))
+        self.assertEqual(record["files"], [])
+        response = self.client.put(
+            f"/api/records/{record_id}",
+            data=self.record_data(
+                trialNo="T-MINIMAL", projectName="", productNo="",
+                resultFiles=(io.BytesIO(b"test result"), "result.txt"),
+            ),
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(response.status_code, 200)
+        record = self.client.get("/api/records").json[0]
+        self.assertEqual(record["files"][0]["fileName"], "result.txt")
+        response = self.client.put(
+            f"/api/records/{record_id}",
+            data=self.record_data(trialNo="T-MINIMAL"),
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(response.status_code, 200)
+        record = self.client.get("/api/records").json[0]
+        self.assertEqual(record["projectName"], "試験案件")
+        self.assertEqual(record["productNo"], "A 12345")
+        self.assertEqual(record["files"][0]["fileName"], "result.txt")
+
+    def test_minimal_registration_still_validates_input(self):
+        self.login()
+        for data in (
+            {"trialNo": "", "manager": "山田太郎"},
+            {"trialNo": "試験番号", "manager": "山田太郎"},
+            {"trialNo": "T-MINIMAL", "manager": ""},
+            {"trialNo": "T-MINIMAL", "manager": "operator"},
+            {"trialNo": "T-MINIMAL", "manager": "山田太郎", "projectName": "!"},
+            {"trialNo": "T-MINIMAL", "manager": "山田太郎", "productNo": "製番"},
+            {"trialNo": "T-MINIMAL", "manager": "山田太郎", "registrationDate": "20260230"},
+        ):
+            with self.subTest(data=data):
+                response = self.client.post(
+                    "/api/records", data=data,
+                    headers={"X-CSRF-Token": self.csrf_token},
+                )
+                self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.client.get("/api/records").json, [])
+
     def test_jumper_checks_persist_and_are_independent(self):
         self.login()
         record_ids = [self.client.post(

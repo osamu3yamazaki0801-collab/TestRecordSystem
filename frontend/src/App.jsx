@@ -9,13 +9,9 @@ const SECTION_DETAILS = {
     title: '試験記録の管理',
     description: '制御ユニットのルーチン試験結果を登録・参照します。',
   },
-  registerSection: {
-    title: '新規登録',
-    description: '試験結果と関連情報を記録します。',
-  },
   searchSection: {
-    title: '記録を検索',
-    description: '登録済みの試験記録を条件で検索します。',
+    title: '記録の登録・検索',
+    description: '試験記録を登録し、条件で検索します。',
   },
 };
 const EMPTY_FILTERS = {
@@ -86,10 +82,10 @@ function validateRegistration(values) {
   if (!validText(values.trialNo, 20, /^[A-Za-z0-9-]+$/)) {
     return '試験番号は半角英数字またはハイフンで20文字以内で入力してください。';
   }
-  if (!validText(values.projectName, 30, /^[\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF0-9A-Za-z\s-]+$/)) {
+  if (values.projectName.trim() && !validText(values.projectName, 30, /^[\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF0-9A-Za-z\s-]+$/)) {
     return '案件名は日本語または英数字で30文字以内で入力してください。';
   }
-  if (!validText(values.productNo, 30, /^[A-Za-z0-9 -]+$/)) {
+  if (values.productNo.trim() && !validText(values.productNo, 30, /^[A-Za-z0-9 -]+$/)) {
     return '製番は30文字以内で、スペースを含む半角英数字を入力してください。';
   }
   if (!/^\d{8}$/.test(values.registrationDate.trim())) {
@@ -137,6 +133,8 @@ function App() {
   const [deletingRecordId, setDeletingRecordId] = useState(null);
   const [selectedRecordId, setSelectedRecordId] = useState(null);
   const [detailRecord, setDetailRecord] = useState(null);
+  const [recordDirty, setRecordDirty] = useState(false);
+  const [newRecordOpen, setNewRecordOpen] = useState(false);
 
   // 初期表示時にセッション状態を確認し、ログイン済みならそのままアプリ画面を表示する。
   useEffect(() => {
@@ -237,10 +235,22 @@ function App() {
   function navigateTo(target) {
     if (SECTION_DETAILS[target]) {
       setSection(target);
-      if (target === 'registerSection') {
-        setRegisterMessage({ text: '', type: '' });
-      }
     }
+  }
+
+  function openNewRecord() {
+    clearRegistrationDraft();
+    setRegisterMessage({ text: '', type: '' });
+    setSection('searchSection');
+    setNewRecordOpen(true);
+  }
+
+  function closeNewRecord() {
+    if (registering) return;
+    if (recordDirty && !window.confirm('未保存の入力を破棄して閉じますか？')) return;
+    setNewRecordOpen(false);
+    clearRegistrationDraft();
+    setRegisterMessage({ text: '', type: '' });
   }
 
   function clearRegistrationDraft() {
@@ -249,6 +259,7 @@ function App() {
     setEditingRecordId(null);
     setExistingFiles([]);
     setRemovedFileIds([]);
+    setRecordDirty(false);
   }
 
   // ログイン処理。
@@ -289,6 +300,8 @@ function App() {
       setSessionMessage('');
       setRegisterMessage({ text: '', type: '' });
       setSearchMessage({ text: '', type: '' });
+      setNewRecordOpen(false);
+      setDetailRecord(null);
       clearRegistrationDraft();
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
@@ -308,6 +321,12 @@ function App() {
     event.preventDefault();
     const form = event.currentTarget;
     const formData = new FormData(form);
+    const isEditing = editingRecordId !== null;
+    if (!isEditing) {
+      ['projectName', 'productNo', 'registrationDate'].forEach((name) => {
+        formData.set(name, registrationValues[name]);
+      });
+    }
     const values = Object.fromEntries(
       ['trialNo', 'projectName', 'productNo', 'registrationDate', 'manager']
         .map((name) => [name, String(formData.get(name) || '').trim()]),
@@ -327,7 +346,6 @@ function App() {
       setRegisterMessage({ text: '添付ファイルの合計は100 MB以下にしてください。', type: 'error' });
       return;
     }
-    const isEditing = editingRecordId !== null;
     if (isEditing) {
       const filesToRemove = existingFiles
         .filter((file) => removedFileIds.includes(file.id))
@@ -342,7 +360,7 @@ function App() {
 
     setRegistering(true);
     try {
-      await apiRequest(
+      const result = await apiRequest(
         isEditing ? `/api/records/${encodeURIComponent(editingRecordId)}` : '/api/records',
         csrfToken.current,
         {
@@ -350,7 +368,19 @@ function App() {
           body: formData,
         },
       );
-      clearRegistrationDraft();
+      if (isEditing) {
+        const updatedRecords = await apiRequest('/api/records', csrfToken.current);
+        const updatedRecord = updatedRecords.find((record) => record.id === editingRecordId);
+        if (updatedRecord) handleEditRecord(updatedRecord);
+        setSearchFilters((filters) => ({ ...filters }));
+      } else {
+        setRecords((current) => [{ id: result.id, ...values, files: [] }, ...current]);
+        setSelectedRecordId(result.id);
+        setSearchFilters({ ...EMPTY_FILTERS });
+        setSearchMessage({ text: '記録を登録しました。', type: 'success' });
+        setNewRecordOpen(false);
+        clearRegistrationDraft();
+      }
       setRegisterMessage({
         text: isEditing ? '記録を変更しました。' : '登録が完了しました。',
         type: 'success',
@@ -369,6 +399,7 @@ function App() {
   }
 
   function handleCopyRecord(record) {
+    openNewRecord();
     setEditingRecordId(null);
     setExistingFiles([]);
     setRemovedFileIds([]);
@@ -379,14 +410,16 @@ function App() {
       registrationDate: record.registrationDate,
       manager: record.manager,
     });
-    navigateTo('registerSection');
     setRegisterMessage({
-      text: '記録をコピーしました。添付ファイルはコピーされません。必要な場合は選択してください。',
+      text: '記録をコピーしました。試験結果ファイルは登録後に記録の詳細から追加できます。',
       type: 'success',
     });
   }
 
   function handleEditRecord(record) {
+    registerForm.current?.reset();
+    setDetailRecord(record);
+    setRecordDirty(false);
     setEditingRecordId(record.id);
     setExistingFiles(record.files || []);
     setRemovedFileIds([]);
@@ -397,11 +430,7 @@ function App() {
       registrationDate: record.registrationDate,
       manager: record.manager,
     });
-    navigateTo('registerSection');
-    setRegisterMessage({
-      text: '記録の内容を編集できます。添付ファイルはチェックすると削除され、新しいファイルを追加できます。',
-      type: 'success',
-    });
+    setRegisterMessage({ text: '', type: '' });
   }
 
   async function handleDeleteRecord(record) {
@@ -432,7 +461,12 @@ function App() {
 
   // 登録フォームの入力をクリアして、今日の日付を再設定する。
   function cancelRegister() {
-    clearRegistrationDraft();
+    if (detailRecord) {
+      if (recordDirty && !window.confirm('未保存の記録の変更を破棄しますか？')) return;
+      handleEditRecord(detailRecord);
+    } else {
+      closeNewRecord();
+    }
     setRegisterMessage({ text: '', type: '' });
   }
 
@@ -461,13 +495,26 @@ function App() {
   }
 
   const details = SECTION_DETAILS[section];
-  const pageTitle = section === 'registerSection' && editingRecordId !== null
-    ? '記録の変更'
-    : details.title;
-  const pageDescription = section === 'registerSection' && editingRecordId !== null
-    ? '記録項目と添付ファイルを編集します。'
-    : details.description;
+  const pageTitle = details.title;
+  const pageDescription = details.description;
   const latestRecord = dashboard?.latestRecord;
+
+  const registrationForm = (
+    <RegistrationForm
+      registerForm={registerForm}
+      handleRegister={handleRegister}
+      registrationValues={registrationValues}
+      setRegistrationValues={setRegistrationValues}
+      editingRecordId={editingRecordId}
+      existingFiles={existingFiles}
+      removedFileIds={removedFileIds}
+      setRemovedFileIds={setRemovedFileIds}
+      registering={registering}
+      cancelRegister={cancelRegister}
+      registerMessage={registerMessage}
+      onChange={() => setRecordDirty(true)}
+    />
+  );
 
   return (
     <div className="app-shell active">
@@ -482,8 +529,7 @@ function App() {
 
         <nav className="side-nav" aria-label="メインメニュー">
           <NavLink target="dashboardSection" section={section} onNavigate={navigateTo} icon="⌂">概要</NavLink>
-          <NavLink target="registerSection" section={section} onNavigate={navigateTo} icon="＋">新規登録</NavLink>
-          <NavLink target="searchSection" section={section} onNavigate={navigateTo} icon="⌕">記録を検索</NavLink>
+          <NavLink target="searchSection" section={section} onNavigate={navigateTo} icon="⌕">記録の登録・検索</NavLink>
         </nav>
 
         <div className="sidebar-bottom">
@@ -510,7 +556,12 @@ function App() {
             <h1>{pageTitle}</h1>
             <p>{pageDescription}</p>
           </div>
-          <span className="system-status"><span className="status-dot" aria-hidden="true"></span>システム稼働中</span>
+          <div className="page-header-actions">
+            <span className="system-status"><span className="status-dot" aria-hidden="true"></span>システム稼働中</span>
+            {section === 'searchSection' && (
+              <button type="button" className="primary-button" onClick={openNewRecord}>新規登録</button>
+            )}
+          </div>
         </header>
         {sessionMessage && <Message type="error">{sessionMessage}</Message>}
 
@@ -522,8 +573,7 @@ function App() {
                 <h2>試験記録を<br />かんたんに管理</h2>
                 <p>試験結果と関連情報を登録し、必要な記録をすぐに検索できます。</p>
                 <div className="welcome-actions">
-                  <button type="button" className="gold-button" onClick={() => navigateTo('registerSection')}>新規登録</button>
-                  <button type="button" className="outline-button" onClick={() => navigateTo('searchSection')}>記録を検索</button>
+                  <button type="button" className="outline-button" onClick={() => navigateTo('searchSection')}>記録の登録・検索</button>
                 </div>
                 <span className="welcome-orbit" aria-hidden="true"></span>
               </article>
@@ -571,82 +621,12 @@ function App() {
                 <div className="quick-links">
                   <button type="button" className="quick-link" onClick={() => navigateTo('searchSection')}>
                     <span className="quick-icon search-icon" aria-hidden="true">⌕</span>
-                    <span className="quick-copy"><strong>記録を検索</strong><small>登録済みの記録を確認</small></span>
-                    <span className="quick-arrow" aria-hidden="true">›</span>
-                  </button>
-                  <button type="button" className="quick-link" onClick={() => navigateTo('registerSection')}>
-                    <span className="quick-icon register-icon" aria-hidden="true">＋</span>
-                    <span className="quick-copy"><strong>新規登録</strong><small>試験結果を台帳に登録</small></span>
+                    <span className="quick-copy"><strong>記録の登録・検索</strong><small>登録済みの記録を確認</small></span>
                     <span className="quick-arrow" aria-hidden="true">›</span>
                   </button>
                 </div>
               </article>
             </div>
-          </section>
-        )}
-
-        {section === 'registerSection' && (
-          <section className="page-section active">
-            <form ref={registerForm} className="form-panel" onSubmit={handleRegister}>
-              <div className="form-grid">
-                <label className="field"><span>試験番号</span><input name="trialNo" type="text" maxLength="20" placeholder="例: T-001" value={registrationValues.trialNo} onChange={(event) => setRegistrationValues((values) => ({ ...values, trialNo: event.target.value }))} required /></label>
-                <label className="field"><span>案件名</span><input name="projectName" type="text" maxLength="30" placeholder="例: X製品試験" value={registrationValues.projectName} onChange={(event) => setRegistrationValues((values) => ({ ...values, projectName: event.target.value }))} required /></label>
-                <label className="field"><span>製番</span><input name="productNo" type="text" maxLength="30" placeholder="例: A 12345" value={registrationValues.productNo} onChange={(event) => setRegistrationValues((values) => ({ ...values, productNo: event.target.value }))} required /></label>
-                <label className="field"><span>登録日</span><input name="registrationDate" type="text" maxLength="8" value={registrationValues.registrationDate} onChange={(event) => setRegistrationValues((values) => ({ ...values, registrationDate: event.target.value }))} placeholder="yyyymmdd" required /></label>
-                <label className="field"><span>担当者</span><input name="manager" type="text" maxLength="30" placeholder="例: 山田太郎" value={registrationValues.manager} onChange={(event) => setRegistrationValues((values) => ({ ...values, manager: event.target.value }))} required /></label>
-                <label className="field file-field">
-                  <span>試験結果</span>
-                  <input name="resultFiles" type="file" multiple />
-                  <small className="field-help">
-                    {editingRecordId === null
-                      ? '複数選択できます。1件100MB以下、合計100MBまでです。'
-                      : '既存ファイルは維持されます。追加するファイルは1件100MB以下、合計100MBまでです。'}
-                  </small>
-                </label>
-              </div>
-              {editingRecordId !== null && (
-                <div className="existing-files">
-                  <strong>現在の添付ファイル</strong>
-                  {existingFiles.length ? (
-                    <ul>
-                      {existingFiles.map((file) => (
-                        <li key={file.id}>
-                          <a
-                            className="file-link"
-                            href={`/api/records/${encodeURIComponent(editingRecordId)}/files/${encodeURIComponent(file.id)}`}
-                          >
-                            {file.fileName}
-                          </a>
-                          <label className="remove-file">
-                            <input
-                              type="checkbox"
-                              checked={removedFileIds.includes(file.id)}
-                              onChange={(event) => {
-                                setRemovedFileIds((current) => (
-                                  event.target.checked
-                                    ? [...current, file.id]
-                                    : current.filter((id) => id !== file.id)
-                                ));
-                              }}
-                            />
-                            削除する
-                          </label>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : <p className="field-help">添付ファイルはありません。</p>}
-                </div>
-              )}
-              <div className="button-row">
-                <button type="submit" className="primary-button" disabled={registering}>
-                  {registering ? '処理中...' : editingRecordId === null ? '登録' : '変更を保存'}
-                </button>
-                <button type="button" className="secondary-button" onClick={cancelRegister}>
-                  {editingRecordId === null ? 'キャンセル' : '変更をキャンセル'}
-                </button>
-              </div>
-              {registerMessage.text && <Message type={registerMessage.type}>{registerMessage.text}</Message>}
-            </form>
           </section>
         )}
 
@@ -663,7 +643,7 @@ function App() {
             </div>
             <div className="table-wrap">
               <table>
-                <thead><tr><th>試験番号</th><th>案件名</th><th>製番</th><th>登録日</th><th>担当者</th><th>添付ファイル</th><th>操作</th></tr></thead>
+                <thead><tr><th>試験番号</th><th>案件名</th><th>製番</th><th>登録日</th><th>担当者</th><th>操作</th></tr></thead>
                 <tbody>
                   {records.length ? records.map((record) => (
                     <tr
@@ -675,14 +655,14 @@ function App() {
                       onDoubleClick={(event) => {
                         if (event.target.closest('button, a')) return;
                         setSelectedRecordId(record.id);
-                        setDetailRecord(record);
+                        handleEditRecord(record);
                       }}
                       onKeyDown={(event) => {
                         if (event.target !== event.currentTarget) return;
                         if (event.key === 'Enter') {
                           event.preventDefault();
                           setSelectedRecordId(record.id);
-                          setDetailRecord(record);
+                          handleEditRecord(record);
                         } else if (event.key === ' ') {
                           event.preventDefault();
                           setSelectedRecordId(record.id);
@@ -694,20 +674,6 @@ function App() {
                       <td>{record.productNo}</td>
                       <td>{record.registrationDate}</td>
                       <td>{record.manager}</td>
-                      <td>{record.files?.length
-                        ? record.files.map((file) => (
-                          <div key={file.id}>
-                            <a
-                              className="file-link"
-                              href={`/api/records/${encodeURIComponent(record.id)}/files/${encodeURIComponent(file.id)}`}
-                            >
-                              {file.fileName}
-                            </a>
-                          </div>
-                        ))
-                        : record.fileName
-                          ? <a className="file-link" href={`/api/records/${encodeURIComponent(record.id)}/file`}>{record.fileName}</a>
-                          : 'なし'}</td>
                       <td>
                         <div className="record-actions">
                           <button
@@ -715,17 +681,10 @@ function App() {
                             className="copy-button secondary-button"
                             onClick={() => {
                               setSelectedRecordId(record.id);
-                              setDetailRecord(record);
+                              handleEditRecord(record);
                             }}
                           >
                             詳細
-                          </button>
-                          <button
-                            type="button"
-                            className="copy-button secondary-button"
-                            onClick={() => handleEditRecord(record)}
-                          >
-                            変更
                           </button>
                           <button
                             type="button"
@@ -745,19 +704,27 @@ function App() {
                         </div>
                       </td>
                     </tr>
-                  )) : <tr><td colSpan="7" className="empty-row">該当するデータはありません。</td></tr>}
+                  )) : <tr><td colSpan="6" className="empty-row">該当するデータはありません。</td></tr>}
                 </tbody>
               </table>
             </div>
           </section>
         )}
       </main>
+      {section === 'searchSection' && newRecordOpen && (
+        <NewRecordDialog onClose={closeNewRecord} registering={registering}>
+          {registrationForm}
+        </NewRecordDialog>
+      )}
       {section === 'searchSection' && detailRecord && (
         <RecordDetails
           key={detailRecord.id}
           record={detailRecord}
           csrfToken={csrfToken.current}
-          setDetailRecord={setDetailRecord}
+          onClose={() => { setDetailRecord(null); clearRegistrationDraft(); setRegisterMessage({ text: '', type: '' }); }}
+          recordDirty={recordDirty}
+          registering={registering}
+          registrationForm={registrationForm}
           setAuthenticated={setAuthenticated}
           setLoginError={setLoginError}
         />
@@ -766,7 +733,86 @@ function App() {
   );
 }
 
-function RecordDetails({ record, csrfToken, setDetailRecord, setAuthenticated, setLoginError }) {
+function NewRecordDialog({ children, onClose, registering }) {
+  const dialog = useRef(null);
+  useEffect(() => {
+    const element = dialog.current;
+    element.showModal();
+    return () => element.close();
+  }, []);
+  return (
+    <dialog
+      ref={dialog}
+      className="record-detail-dialog new-record-dialog"
+      aria-labelledby="new-record-title"
+      onCancel={(event) => { event.preventDefault(); onClose(); }}
+      onKeyDown={(event) => {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          onClose();
+        }
+      }}
+    >
+      <header className="record-detail-heading">
+        <h2 id="new-record-title">新規登録</h2>
+        <button type="button" className="detail-close" aria-label="閉じる" title="閉じる" disabled={registering} onClick={onClose}>{'\u00d7'}</button>
+      </header>
+      {children}
+    </dialog>
+  );
+}
+
+function RegistrationForm({ registerForm, handleRegister, registrationValues, setRegistrationValues, editingRecordId, existingFiles, removedFileIds, setRemovedFileIds, registering, cancelRegister, registerMessage, onChange }) {
+  return (
+    <form ref={registerForm} className="form-panel" onSubmit={handleRegister} onChange={onChange}>
+      <fieldset className="record-form-fields" disabled={registering}>
+        <div className="form-grid">
+          <label className="field"><span>試験番号</span><input name="trialNo" type="text" maxLength="20" placeholder="例: T-001" value={registrationValues.trialNo} onChange={(event) => setRegistrationValues((values) => ({ ...values, trialNo: event.target.value }))} required /></label>
+          {editingRecordId !== null && (
+            <>
+              <label className="field"><span>案件名</span><input name="projectName" type="text" maxLength="30" placeholder="例: X製品試験" value={registrationValues.projectName} onChange={(event) => setRegistrationValues((values) => ({ ...values, projectName: event.target.value }))} /></label>
+              <label className="field"><span>製番</span><input name="productNo" type="text" maxLength="30" placeholder="例: A 12345" value={registrationValues.productNo} onChange={(event) => setRegistrationValues((values) => ({ ...values, productNo: event.target.value }))} /></label>
+              <label className="field"><span>登録日</span><input name="registrationDate" type="text" maxLength="8" value={registrationValues.registrationDate} onChange={(event) => setRegistrationValues((values) => ({ ...values, registrationDate: event.target.value }))} placeholder="yyyymmdd" required /></label>
+            </>
+          )}
+          <label className="field"><span>担当者</span><input name="manager" type="text" maxLength="30" placeholder="例: 山田太郎" value={registrationValues.manager} onChange={(event) => setRegistrationValues((values) => ({ ...values, manager: event.target.value }))} required /></label>
+          {editingRecordId !== null && (
+            <label className="field file-field">
+              <span>試験結果</span>
+              <input name="resultFiles" type="file" multiple />
+              <small className="field-help">既存ファイルは維持されます。追加するファイルは1件100MB以下、合計100MBまでです。</small>
+            </label>
+          )}
+        </div>
+        {editingRecordId !== null && (
+          <div className="existing-files">
+            <strong>現在の添付ファイル</strong>
+            {existingFiles.length ? (
+              <ul>{existingFiles.map((file) => (
+                <li key={file.id}>
+                  <a className="file-link" href={`/api/records/${encodeURIComponent(editingRecordId)}/files/${encodeURIComponent(file.id)}`}>{file.fileName}</a>
+                  <label className="remove-file">
+                    <input type="checkbox" checked={removedFileIds.includes(file.id)} onChange={(event) => {
+                      setRemovedFileIds((current) => event.target.checked ? [...current, file.id] : current.filter((id) => id !== file.id));
+                    }} />
+                    削除する
+                  </label>
+                </li>
+              ))}</ul>
+            ) : <p className="field-help">添付ファイルはありません。</p>}
+          </div>
+        )}
+        <div className="button-row">
+          <button type="submit" className="primary-button" disabled={registering}>{registering ? '処理中...' : editingRecordId === null ? '登録' : '変更を保存'}</button>
+          <button type="button" className="secondary-button" onClick={cancelRegister}>{editingRecordId === null ? 'キャンセル' : '変更をキャンセル'}</button>
+        </div>
+      </fieldset>
+      {registerMessage.text && <Message type={registerMessage.type}>{registerMessage.text}</Message>}
+    </form>
+  );
+}
+
+function RecordDetails({ record, csrfToken, onClose, recordDirty, registering, registrationForm, setAuthenticated, setLoginError }) {
   const dialog = useRef(null);
   const [jumpers, setJumpers] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -774,8 +820,9 @@ function RecordDetails({ record, csrfToken, setDetailRecord, setAuthenticated, s
   const [equipmentDirty, setEquipmentDirty] = useState(false);
 
   function closeDetails() {
-    if (equipmentDirty && !window.confirm('未保存の機器情報を破棄して閉じますか？')) return;
-    setDetailRecord(null);
+    if (registering) return;
+    if ((recordDirty || equipmentDirty) && !window.confirm('未保存の変更を破棄して閉じますか？')) return;
+    onClose();
   }
 
   useEffect(() => {
@@ -841,20 +888,11 @@ function RecordDetails({ record, csrfToken, setDetailRecord, setAuthenticated, s
           className="detail-close"
           aria-label="閉じる"
           title="閉じる"
+          disabled={registering}
           onClick={closeDetails}
         >{ '\u00d7' }</button>
       </header>
-      <dl className="record-detail-fields">
-        {[
-          ['試験番号', record.trialNo],
-          ['案件名', record.projectName],
-          ['製番', record.productNo],
-          ['登録日', formatRegistrationDate(record.registrationDate)],
-          ['担当者', record.manager],
-        ].map(([label, value]) => (
-          <div key={label}><dt>{label}</dt><dd>{value}</dd></div>
-        ))}
-      </dl>
+      {registrationForm}
       <h3 className="jumper-heading">ジャンパ設定</h3>
       {jumpers ? (
         <div className="equipment-table-wrap jumper-table-wrap">

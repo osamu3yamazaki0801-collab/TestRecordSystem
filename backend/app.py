@@ -762,6 +762,69 @@ def create_app(test_config=None):
                 abort(404)
         return jsonify(success=True)
 
+    @app.post("/api/records/<int:record_id>/files")
+    @require_login
+    @require_csrf
+    def add_record_file(record_id):
+        uploads = [
+            upload for upload in request.files.getlist("resultFile")
+            if upload and upload.filename
+        ]
+        if len(uploads) != 1:
+            return jsonify(error="試験結果ファイルを1件選択してください。"), 400
+        upload = uploads[0]
+        content = upload.read(MAX_FILE_SIZE + 1)
+        if len(content) > MAX_FILE_SIZE:
+            return jsonify(error="添付ファイルは1件あたり100 MB以下にしてください。"), 413
+        try:
+            parse_trial_results_file(upload.filename, content)
+        except ValueError as error:
+            return jsonify(error=str(error)), 400
+
+        file_name = upload.filename.replace("\\", "/").rsplit("/", 1)[-1]
+        file_name = "".join(char for char in file_name if char.isprintable()).strip()[:255]
+        file_name = file_name or "trial-result.csv"
+        with closing(connect_db()) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if not connection.execute(
+                "SELECT id FROM records WHERE id = ?", (record_id,)
+            ).fetchone():
+                abort(404)
+            if connection.execute(
+                "SELECT id FROM record_files WHERE record_id = ?", (record_id,)
+            ).fetchone():
+                return jsonify(error="試験結果ファイルは1件だけ登録できます。"), 409
+            cursor = connection.execute(
+                """
+                INSERT INTO record_files (
+                    record_id, file_name, file_content_type, file_data
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (record_id, file_name, upload.mimetype or "application/octet-stream", content),
+            )
+            files = [{"id": cursor.lastrowid, "fileName": file_name}]
+        return jsonify(files=files), 201
+
+    @app.delete("/api/records/<int:record_id>/files/<int:file_id>")
+    @require_login
+    @require_csrf
+    def delete_record_file(record_id, file_id):
+        with closing(connect_db()) as connection, connection:
+            cursor = connection.execute(
+                "DELETE FROM record_files WHERE record_id = ? AND id = ?",
+                (record_id, file_id),
+            )
+            if cursor.rowcount == 0:
+                abort(404)
+            files = [
+                {"id": row["id"], "fileName": row["file_name"]}
+                for row in connection.execute(
+                    "SELECT id, file_name FROM record_files WHERE record_id = ? ORDER BY id",
+                    (record_id,),
+                ).fetchall()
+            ]
+        return jsonify(files=files)
+
     # 登録済み添付ファイルのダウンロード処理。
     @app.get("/api/records/<int:record_id>/files/<int:file_id>")
     @require_login

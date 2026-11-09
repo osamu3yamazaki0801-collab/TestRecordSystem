@@ -567,6 +567,36 @@ class LedgerAppTests(unittest.TestCase):
             self.assertEqual(self.client.get(f"/api/records/{record_id}/equipment").json, equipment)
             self.assertTrue(all(not jumper["confirmed"] for jumper in self.client.get(f"/api/records/{record_id}/jumpers").json))
 
+    def test_attachment_upload_and_delete_save_immediately(self):
+        self.login()
+        record_id = self.client.post(
+            "/api/records", data=self.record_data(), headers={"X-CSRF-Token": self.csrf_token},
+        ).json["id"]
+        upload = self.client.post(
+            f"/api/records/{record_id}/files",
+            data={"resultFile": (io.BytesIO(SAMPLE_RESULTS_CSV.encode("utf-8")), "results.csv")},
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(upload.status_code, 201)
+        self.assertEqual([item["fileName"] for item in upload.json["files"]], ["results.csv"])
+        file_id = upload.json["files"][0]["id"]
+        self.assertEqual(self.client.get("/api/records").json[0]["files"], upload.json["files"])
+
+        duplicate = self.client.post(
+            f"/api/records/{record_id}/files",
+            data={"resultFile": (io.BytesIO(SAMPLE_RESULTS_CSV.encode("utf-8")), "second.csv")},
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(duplicate.status_code, 409)
+
+        deletion = self.client.delete(
+            f"/api/records/{record_id}/files/{file_id}",
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(deletion.status_code, 200)
+        self.assertEqual(deletion.json["files"], [])
+        self.assertEqual(self.client.get("/api/records").json[0]["files"], [])
+
     def test_rejects_record_write_without_csrf(self):
         self.login()
         response = self.client.post(

@@ -524,6 +524,13 @@ function App() {
     setRegisterMessage({ text: '', type: '' });
   }
 
+  function handleDetailFilesChanged(recordId, files) {
+    setExistingFiles(files);
+    setDetailRecord((current) => current && current.id === recordId
+      ? { ...current, files, fileName: files[0]?.fileName || null }
+      : current);
+  }
+
   async function handleDeleteRecord(record) {
     if (!window.confirm(
       `試験番号「${record.trialNo}」の記録と添付ファイルを削除します。この操作は取り消せません。`,
@@ -628,8 +635,7 @@ function App() {
             registering={registering}
             registrationForm={registrationForm}
             existingFiles={existingFiles}
-            setRemovedFileIds={setRemovedFileIds}
-            onFilesChange={setPreviewFiles}
+            onFilesChanged={handleDetailFilesChanged}
             setAuthenticated={setAuthenticated}
             setLoginError={setLoginError}
           />
@@ -903,16 +909,69 @@ function RegistrationForm({ registerForm, handleRegister, registrationValues, se
   );
 }
 
-function RecordDetails({ record, onClose, recordDirty, registering, registrationForm, equipment, setEquipment, jumpers, setJumpers, onDirty, cancelRegister, registerMessage, pendingFiles, removedFileIds, existingFiles, setRemovedFileIds, onFilesChange, csrfToken, setAuthenticated, setLoginError }) {
+function RecordDetails({ record, onClose, recordDirty, registering, registrationForm, equipment, setEquipment, jumpers, setJumpers, onDirty, cancelRegister, registerMessage, pendingFiles, existingFiles, onFilesChanged, csrfToken, setAuthenticated, setLoginError }) {
   const [activeTab, setActiveTab] = useState(0);
+  const [fileActionPending, setFileActionPending] = useState(false);
+  const [fileActionMessage, setFileActionMessage] = useState({ text: '', type: '' });
   const detailTabs = [
     '試験情報',
     '外観チェック',
     '試験結果',
   ];
 
+  async function uploadTrialResults(event) {
+    const input = event.currentTarget;
+    const file = input.files[0];
+    input.value = '';
+    if (!file) return;
+
+    const formData = new FormData();
+    formData.append('resultFile', file);
+    setFileActionPending(true);
+    setFileActionMessage({ text: '試験結果CSVを保存中...', type: '' });
+    try {
+      const result = await apiRequest(`/api/records/${record.id}/files`, csrfToken, {
+        method: 'POST',
+        body: formData,
+      });
+      onFilesChanged(record.id, result.files);
+      setFileActionMessage({ text: '試験結果CSVを保存しました。', type: 'success' });
+    } catch (error) {
+      setFileActionMessage({ text: error.message, type: 'error' });
+      if (error.status === 401) {
+        setAuthenticated(false);
+        setLoginError(error.message);
+      }
+    } finally {
+      setFileActionPending(false);
+    }
+  }
+
+  async function deleteTrialResults(file) {
+    if (!window.confirm(`試験結果ファイル「${file.fileName}」を削除しますか？`)) return;
+    setFileActionPending(true);
+    setFileActionMessage({ text: '試験結果CSVを削除中...', type: '' });
+    try {
+      const result = await apiRequest(
+        `/api/records/${record.id}/files/${file.id}`,
+        csrfToken,
+        { method: 'DELETE' },
+      );
+      onFilesChanged(record.id, result.files);
+      setFileActionMessage({ text: '試験結果CSVを削除しました。', type: 'success' });
+    } catch (error) {
+      setFileActionMessage({ text: error.message, type: 'error' });
+      if (error.status === 401) {
+        setAuthenticated(false);
+        setLoginError(error.message);
+      }
+    } finally {
+      setFileActionPending(false);
+    }
+  }
+
   function closeDetails() {
-    if (registering) return;
+    if (registering || fileActionPending) return;
     onClose();
   }
 
@@ -922,13 +981,13 @@ function RecordDetails({ record, onClose, recordDirty, registering, registration
 
   useEffect(() => {
     const handleBeforeUnload = (event) => {
-      if (!recordDirty && !registering) return;
+      if (!recordDirty && !registering && !fileActionPending) return;
       event.preventDefault();
       event.returnValue = '';
     };
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [recordDirty, registering]);
+  }, [recordDirty, registering, fileActionPending]);
 
   return (
     <section
@@ -948,7 +1007,7 @@ function RecordDetails({ record, onClose, recordDirty, registering, registration
           className="detail-close"
           aria-label="閉じる"
           title="閉じる"
-          disabled={registering}
+          disabled={registering || fileActionPending}
           onClick={closeDetails}
         >{ '\u00d7' }</button>
       </header>
@@ -956,10 +1015,10 @@ function RecordDetails({ record, onClose, recordDirty, registering, registration
         {registrationForm}
         <div className="button-row">
           {recordDirty && <span className="status-text warning">未保存</span>}
-          <button type="submit" form="record-edit-form" className="primary-button" disabled={registering || !equipment || !jumpers}>
+          <button type="submit" form="record-edit-form" className="primary-button" disabled={registering || fileActionPending || !equipment || !jumpers}>
             {registering ? '保存中...' : '変更を保存'}
           </button>
-          <button type="button" className="secondary-button" disabled={registering} onClick={cancelRegister}>変更をキャンセル</button>
+          <button type="button" className="secondary-button" disabled={registering || fileActionPending} onClick={cancelRegister}>変更をキャンセル</button>
         </div>
         {registerMessage.text && <Message type={registerMessage.type}>{registerMessage.text}</Message>}
       </div>
@@ -1035,48 +1094,40 @@ function RecordDetails({ record, onClose, recordDirty, registering, registration
               <div className="result-file-registration">
                 <h2>試験結果CSVを登録</h2>
                 <div className="result-file-actions">
-                  {existingFiles.length ? (
-                    <ul className="result-file-list">{existingFiles.map((file) => {
-                      const markedForRemoval = removedFileIds.includes(file.id);
-                      return (
+                  {existingFiles.length > 0 && (
+                    <ul className="result-file-list">{existingFiles.map((file) => (
                         <li key={file.id}>
                           <a className="file-link" href={`/api/records/${encodeURIComponent(record.id)}/files/${encodeURIComponent(file.id)}`}>{file.fileName}</a>
                           <button
                             type="button"
                             className="delete-button"
-                            aria-pressed={markedForRemoval}
-                            disabled={registering}
-                            onClick={() => {
-                              setRemovedFileIds((current) => markedForRemoval
-                                ? current.filter((id) => id !== file.id)
-                                : [...current, file.id]);
-                              onDirty();
-                            }}
-                          >{markedForRemoval ? '削除を取り消す' : '削除する'}</button>
+                            disabled={registering || fileActionPending}
+                            onClick={() => deleteTrialResults(file)}
+                          >{fileActionPending ? '削除中...' : '削除する'}</button>
                         </li>
-                      );
-                    })}</ul>
-                  ) : <p className="result-file-empty">ファイルが選択されていません</p>}
-                  <label className="field file-field result-file-picker">
-                    <span>試験結果ファイル</span>
-                    <input
-                      form="record-edit-form"
-                      name="resultFiles"
-                      type="file"
-                      accept=".csv,text/csv"
-                      disabled={registering || existingFiles.some((file) => !removedFileIds.includes(file.id))}
-                      onChange={(event) => {
-                        onFilesChange(Array.from(event.target.files));
-                        onDirty();
-                      }}
-                    />
-                    <small className="field-help">自動試験システムの試験結果CSVをインポートしてください。</small>
-                  </label>
+                      ))}</ul>
+                  )}
+                  {existingFiles.length === 0 && (
+                    <div className="field file-field result-file-picker">
+                      <span>試験結果ファイル</span>
+                      <label className={`secondary-button file-picker-control${fileActionPending ? ' is-disabled' : ''}`}>
+                        <span>ファイルを選択</span>
+                        <input
+                          type="file"
+                          accept=".csv,text/csv"
+                          disabled={registering || fileActionPending}
+                          onChange={uploadTrialResults}
+                        />
+                      </label>
+                      <small className="field-help">自動試験システムの試験結果CSVをインポートしてください。</small>
+                    </div>
+                  )}
                 </div>
+                {fileActionMessage.text && <Message type={fileActionMessage.type}>{fileActionMessage.text}</Message>}
               </div>
               <TrialResults
                 recordId={record.id}
-                files={(record.files || []).filter((file) => !removedFileIds.includes(file.id))}
+                files={existingFiles}
                 pendingFiles={pendingFiles}
                 csrfToken={csrfToken}
                 request={apiRequest}

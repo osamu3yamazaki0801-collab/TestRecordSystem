@@ -992,7 +992,7 @@ function RecordDetails({ record, onClose, recordDirty, registering, registration
   return (
     <section
       className="record-detail-content"
-      aria-labelledby="record-detail-title"
+      aria-label="記録の詳細"
       onKeyDown={(event) => {
         if (event.key === 'Escape') {
           event.preventDefault();
@@ -1000,28 +1000,18 @@ function RecordDetails({ record, onClose, recordDirty, registering, registration
         }
       }}
     >
-      <header className="record-detail-heading">
-        <h1 id="record-detail-title">記録の詳細 <span className="detail-trial-no">{record.trialNo}</span></h1>
-        <button
-          type="button"
-          className="detail-close"
-          aria-label="閉じる"
-          title="閉じる"
-          disabled={registering || fileActionPending}
-          onClick={closeDetails}
-        >{ '\u00d7' }</button>
-      </header>
       <div className="record-detail-common">
         {registrationForm}
         <div className="button-row">
           {recordDirty && <span className="status-text warning">未保存</span>}
           <button type="submit" form="record-edit-form" className="primary-button" disabled={registering || fileActionPending || !equipment || !jumpers}>
-            {registering ? '保存中...' : '変更を保存'}
+            {registering ? '保存中...' : '保存'}
           </button>
-          <button type="button" className="secondary-button" disabled={registering || fileActionPending} onClick={cancelRegister}>変更をキャンセル</button>
+          <button type="button" className="secondary-button" disabled={registering || fileActionPending} onClick={cancelRegister}>キャンセル</button>
         </div>
         {registerMessage.text && <Message type={registerMessage.type}>{registerMessage.text}</Message>}
       </div>
+      <div className="record-detail-workspace">
       <div className="record-detail-tabs" role="tablist" aria-label="記録詳細">
         {detailTabs.map((title, index) => (
           <button
@@ -1138,6 +1128,7 @@ function RecordDetails({ record, onClose, recordDirty, registering, registration
           )}
         </div>
       ))}
+      </div>
     </section>
   );
 }

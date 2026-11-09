@@ -1261,17 +1261,21 @@ tbody tr:last-child td {
 }
 
 .record-detail-page {
-  width: min(100%, 1100px);
-  margin: 0 auto;
+  width: 100%;
+  margin: 0;
   padding: 24px;
 }
 
 .record-detail-content {
+  display: grid;
+  grid-template-columns: minmax(300px, 340px) minmax(0, 1fr);
+  align-items: start;
+  gap: 24px;
   min-width: 0;
 }
 
 .record-detail-common {
-  margin-bottom: 20px;
+  min-width: 0;
   padding: 16px;
   border: 1px solid var(--border);
   border-left: 4px solid #195f7c;
@@ -1283,12 +1287,8 @@ tbody tr:last-child td {
   justify-content: flex-end;
 }
 
-.detail-trial-no {
-  display: inline-block;
-  margin-left: 12px;
-  overflow-wrap: anywhere;
-  font-size: 1rem;
-  font-weight: 400;
+.record-detail-workspace {
+  min-width: 0;
 }
 
 .record-detail-dialog {
@@ -1330,11 +1330,6 @@ tbody tr:last-child td {
 .record-detail-heading h2 {
   margin: 0;
   font-size: 1.2rem;
-}
-
-.record-detail-content .record-detail-heading {
-  position: static;
-  margin-bottom: 16px;
 }
 
 .detail-close {
@@ -1568,6 +1563,10 @@ tbody tr:last-child td {
 }
 
 @media (max-width: 760px) {
+  .record-detail-content {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .result-file-actions {
     grid-template-columns: minmax(0, 1fr);
   }

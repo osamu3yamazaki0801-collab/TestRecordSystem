@@ -7,7 +7,7 @@ function Judgement({ value }) {
   return <span className={`csv-judgement ${status === 'PASS' ? 'pass' : status === 'FAIL' ? 'fail' : 'unjudged'}`}>{value || '-'}</span>;
 }
 
-export default function TrialResults({ recordId, files, pendingFiles, csrfToken, request, setAuthenticated, setLoginError }) {
+export default function TrialResults({ recordId, files, pendingFiles, csrfToken, request, setAuthenticated, setLoginError, fileActionPending, onDeleteFile }) {
   const [selectedKey, setSelectedKey] = useState('');
   const [parsed, setParsed] = useState(null);
   const [error, setError] = useState('');
@@ -83,12 +83,19 @@ export default function TrialResults({ recordId, files, pendingFiles, csrfToken,
         <h2 id="trial-results-title">試験結果（CSV）</h2>
         {pending && <span className="status-text warning">未保存</span>}
       </div>
-      <label className="field csv-file-select">
-        <span>試験結果ファイル</span>
-        <select value={sourceKey} onChange={(event) => setSelectedKey(event.target.value)}>
-          {sources.map((item) => <option key={item.key} value={item.key}>{item.name}{item.pending ? '（未保存）' : ''}</option>)}
-        </select>
-      </label>
+      <div className="csv-file-controls">
+        <label className="field csv-file-select">
+          <span>試験結果ファイル</span>
+          <select value={sourceKey} onChange={(event) => setSelectedKey(event.target.value)}>
+            {sources.map((item) => <option key={item.key} value={item.key}>{item.name}{item.pending ? '（未保存）' : ''}</option>)}
+          </select>
+        </label>
+        {files.length > 0 && (
+          <button type="button" className="delete-button csv-file-delete" disabled={fileActionPending} onClick={onDeleteFile}>
+            {fileActionPending ? '削除中...' : '削除する'}
+          </button>
+        )}
+      </div>
       {!data && <p className={`status-text${error ? ' error' : ''}`} aria-live="polite">{error || 'CSVを読み込み中...'}</p>}
       {data && section && (
         <>

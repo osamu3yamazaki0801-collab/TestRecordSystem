@@ -121,34 +121,6 @@ button {
   font-size: 1.05rem;
 }
 
-.result-file-actions {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(260px, 0.9fr);
-  align-items: start;
-  gap: 16px;
-}
-
-.result-file-list {
-  display: grid;
-  gap: 8px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.result-file-list li {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.result-file-list .file-link {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
 .result-file-picker {
   min-width: 0;
 }
@@ -167,7 +139,10 @@ button {
 }
 
 .file-picker-control {
+  align-self: flex-start;
   position: relative;
+  min-height: 36px;
+  padding: 6px 12px;
   overflow: hidden;
 }
 
@@ -1056,8 +1031,20 @@ tbody tr:last-child td {
 }
 
 .csv-file-select {
+  flex: 1 1 320px;
   max-width: 520px;
   margin: 16px 0;
+}
+
+.csv-file-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.csv-file-delete {
+  margin-bottom: 16px;
 }
 
 .trial-results-panel select {
@@ -1603,10 +1590,6 @@ tbody tr:last-child td {
 
   .record-detail-resizer {
     display: none;
-  }
-
-  .result-file-actions {
-    grid-template-columns: minmax(0, 1fr);
   }
 
   .app-shell.active {

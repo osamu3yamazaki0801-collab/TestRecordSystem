@@ -1144,40 +1144,24 @@ function RecordDetails({ record, onClose, recordDirty, registering, registration
           )}
           {index === 2 && (
             <>
-              <div className="result-file-registration">
-                <h2>試験結果CSVを登録</h2>
-                <div className="result-file-actions">
-                  {existingFiles.length > 0 && (
-                    <ul className="result-file-list">{existingFiles.map((file) => (
-                        <li key={file.id}>
-                          <a className="file-link" href={`/api/records/${encodeURIComponent(record.id)}/files/${encodeURIComponent(file.id)}`}>{file.fileName}</a>
-                          <button
-                            type="button"
-                            className="delete-button"
-                            disabled={registering || fileActionPending}
-                            onClick={() => deleteTrialResults(file)}
-                          >{fileActionPending ? '削除中...' : '削除する'}</button>
-                        </li>
-                      ))}</ul>
-                  )}
-                  {existingFiles.length === 0 && (
-                    <div className="field file-field result-file-picker">
-                      <span>試験結果ファイル</span>
-                      <label className={`secondary-button file-picker-control${fileActionPending ? ' is-disabled' : ''}`}>
-                        <span>ファイルを選択</span>
-                        <input
-                          type="file"
-                          accept=".csv,text/csv"
-                          disabled={registering || fileActionPending}
-                          onChange={uploadTrialResults}
-                        />
-                      </label>
-                      <small className="field-help">自動試験システムの試験結果CSVをインポートしてください。</small>
-                    </div>
-                  )}
+              {existingFiles.length === 0 && (
+                <div className="result-file-registration">
+                  <h2>試験結果CSVを登録</h2>
+                  <div className="field file-field result-file-picker">
+                    <span>試験結果ファイル</span>
+                    <label className={`secondary-button file-picker-control${fileActionPending ? ' is-disabled' : ''}`}>
+                      <span>ファイルを選択</span>
+                      <input
+                        type="file"
+                        accept=".csv,text/csv"
+                        disabled={registering || fileActionPending}
+                        onChange={uploadTrialResults}
+                      />
+                    </label>
+                    <small className="field-help">自動試験システムの試験結果CSVをインポートしてください。</small>
+                  </div>
                 </div>
-                {fileActionMessage.text && <Message type={fileActionMessage.type}>{fileActionMessage.text}</Message>}
-              </div>
+              )}
               <TrialResults
                 recordId={record.id}
                 files={existingFiles}
@@ -1186,7 +1170,10 @@ function RecordDetails({ record, onClose, recordDirty, registering, registration
                 request={apiRequest}
                 setAuthenticated={setAuthenticated}
                 setLoginError={setLoginError}
+                fileActionPending={fileActionPending}
+                onDeleteFile={() => deleteTrialResults(existingFiles[0])}
               />
+              {fileActionMessage.text && <Message type={fileActionMessage.type}>{fileActionMessage.text}</Message>}
             </>
           )}
         </div>

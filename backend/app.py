@@ -49,6 +49,25 @@ def empty_equipment():
     }
 
 
+def validate_equipment(data):
+    template = empty_equipment()
+    if not isinstance(data, dict) or data.keys() != template.keys():
+        return "機器情報の形式が正しくありません。"
+    fixed_fields = {"boards": {"name"}, "instruments": set(), "software": {"name", "sdFormat"}}
+    for group, expected_rows in template.items():
+        rows = data[group]
+        if not isinstance(rows, list) or len(rows) != len(expected_rows):
+            return "機器情報の行数が正しくありません。"
+        for row, expected in zip(rows, expected_rows):
+            if not isinstance(row, dict) or row.keys() != expected.keys():
+                return "機器情報の項目が正しくありません。"
+            if any(not isinstance(value, str) or len(value) > 100 for value in row.values()):
+                return "各項目は100文字以内の文字列で入力してください。"
+            if any(row[field] != expected[field] for field in fixed_fields[group]):
+                return "基板名・ソフト名・SD形式は変更できません。"
+    return None
+
+
 # 日本語テキスト判定。
 # 文字ごとに Unicode のカテゴリと文字種を確認して、ひらがな・カタカナ・漢字を判定する。
 def is_japanese_text(value):
@@ -569,21 +588,9 @@ def create_app(test_config=None):
         data = None
         if request.method == "PUT":
             data = request.get_json(silent=True)
-            template = empty_equipment()
-            if not isinstance(data, dict) or data.keys() != template.keys():
-                return jsonify(error="機器情報の形式が正しくありません。"), 400
-            fixed_fields = {"boards": {"name"}, "instruments": set(), "software": {"name", "sdFormat"}}
-            for group, expected_rows in template.items():
-                rows = data[group]
-                if not isinstance(rows, list) or len(rows) != len(expected_rows):
-                    return jsonify(error="機器情報の行数が正しくありません。"), 400
-                for row, expected in zip(rows, expected_rows):
-                    if not isinstance(row, dict) or row.keys() != expected.keys():
-                        return jsonify(error="機器情報の項目が正しくありません。"), 400
-                    if any(not isinstance(value, str) or len(value) > 100 for value in row.values()):
-                        return jsonify(error="各項目は100文字以内の文字列で入力してください。"), 400
-                    if any(row[field] != expected[field] for field in fixed_fields[group]):
-                        return jsonify(error="基板名・ソフト名・SD形式は変更できません。"), 400
+            error = validate_equipment(data)
+            if error:
+                return jsonify(error=error), 400
 
         with closing(connect_db()) as connection, connection:
             if not connection.execute(
@@ -604,6 +611,7 @@ def create_app(test_config=None):
             ).fetchone()
         return jsonify(json.loads(row["payload"]) if row else empty_equipment())
 
+    @app.put("/api/records/<int:record_id>/details")
     @app.put("/api/records/<int:record_id>")
     @require_login
     @require_csrf
@@ -615,6 +623,25 @@ def create_app(test_config=None):
         )
         if error:
             return jsonify(error=error[0]), error[1]
+
+        combined = request.path.endswith("/details")
+        equipment = None
+        jumper_checks = None
+        if combined:
+            try:
+                equipment = json.loads(request.form.get("equipment", ""))
+                jumper_checks = json.loads(request.form.get("jumperChecks", ""))
+            except (ValueError, TypeError):
+                return jsonify(error="機器情報・ジャンパ確認の形式が正しくありません。"), 400
+            error = validate_equipment(equipment)
+            if error:
+                return jsonify(error=error), 400
+            if (
+                not isinstance(jumper_checks, dict)
+                or set(jumper_checks) != {"W1", "W2"}
+                or any(not isinstance(value, bool) for value in jumper_checks.values())
+            ):
+                return jsonify(error="ジャンパ確認はW1・W2の真偽値で指定してください。"), 400
 
         raw_remove_ids = request.form.getlist("removeFileIds")
         try:
@@ -675,6 +702,39 @@ def create_app(test_config=None):
                 [(record_id, file_name, content_type, file_data)
                  for file_name, content_type, file_data in files],
             )
+            if combined:
+                connection.execute(
+                    """
+                    INSERT INTO record_equipment (record_id, payload) VALUES (?, ?)
+                    ON CONFLICT(record_id) DO UPDATE SET payload = excluded.payload
+                    """,
+                    (record_id, json.dumps(equipment)),
+                )
+                connection.executemany(
+                    """
+                    INSERT INTO jumper_checks (record_id, jumper_name, confirmed)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(record_id, jumper_name)
+                    DO UPDATE SET confirmed = excluded.confirmed
+                    """,
+                    [(record_id, name, int(confirmed)) for name, confirmed in jumper_checks.items()],
+                )
+                saved_files = [
+                    {"id": row["id"], "fileName": row["file_name"]}
+                    for row in connection.execute(
+                        "SELECT id, file_name FROM record_files WHERE record_id = ? ORDER BY id",
+                        (record_id,),
+                    ).fetchall()
+                ]
+                updated_record = {
+                    "id": record_id,
+                    **values,
+                    "registrationDate": registration_date,
+                    "files": saved_files,
+                    "fileName": saved_files[0]["fileName"] if saved_files else None,
+                }
+        if combined:
+            return jsonify(success=True, record=updated_record, equipment=equipment, jumperChecks=jumper_checks)
         return jsonify(success=True)
 
     # 記録を削除する。添付ファイルは外部キーの CASCADE により同時に削除される。

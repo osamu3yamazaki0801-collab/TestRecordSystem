@@ -26,6 +26,11 @@ body {
   color: var(--text);
 }
 
+body:has(.record-detail-page) {
+  --bg: #eef4f7;
+  --panel: #f6f9fb;
+}
+
 button,
 input {
   font: inherit;
@@ -216,6 +221,10 @@ button {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+
+.record-actions a {
+  text-decoration: none;
 }
 
 .copy-button {
@@ -991,6 +1000,24 @@ tbody tr:last-child td {
   outline-offset: -2px;
 }
 
+.record-detail-page {
+  width: min(100%, 1100px);
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.record-detail-content {
+  min-width: 0;
+}
+
+.detail-trial-no {
+  display: inline-block;
+  margin-left: 12px;
+  overflow-wrap: anywhere;
+  font-size: 1rem;
+  font-weight: 400;
+}
+
 .record-detail-dialog {
   width: min(720px, calc(100% - 32px));
   max-height: calc(100dvh - 32px);
@@ -1026,9 +1053,15 @@ tbody tr:last-child td {
   background: var(--panel);
 }
 
+.record-detail-heading h1,
 .record-detail-heading h2 {
   margin: 0;
   font-size: 1.2rem;
+}
+
+.record-detail-content .record-detail-heading {
+  position: static;
+  margin-bottom: 16px;
 }
 
 .detail-close {

@@ -1,4 +1,5 @@
 import io
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -341,6 +342,125 @@ class LedgerAppTests(unittest.TestCase):
         self.assertEqual(self.client.get(url).json, initial)
         self.assertEqual(self.client.get("/api/records/99999/equipment").status_code, 404)
         self.assertEqual(self.client.put("/api/records/99999/equipment", json=initial, headers={"X-CSRF-Token": self.csrf_token}).status_code, 404)
+
+    def test_unified_details_save(self):
+        self.login()
+        record_id = self.client.post(
+            "/api/records",
+            data=self.record_data(resultFiles=(io.BytesIO(b"old"), "old.txt")),
+            headers={"X-CSRF-Token": self.csrf_token},
+        ).json["id"]
+        file_id = self.client.get("/api/records").json[0]["files"][0]["id"]
+        equipment = self.client.get(f"/api/records/{record_id}/equipment").json
+        equipment["boards"][0]["serialNumber"] = "SERIAL-001"
+        equipment["instruments"][0]["name"] = "オシロスコープ"
+        equipment["software"][0]["version"] = "1.2"
+        response = self.client.put(
+            f"/api/records/{record_id}/details",
+            data=self.record_data(
+                projectName="一括変更案件", equipment=json.dumps(equipment),
+                jumperChecks=json.dumps({"W1": True, "W2": False}),
+                removeFileIds=str(file_id),
+                resultFiles=(io.BytesIO(b"new"), "new.txt"),
+            ),
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(response.status_code, 200)
+        record = self.client.get("/api/records").json[0]
+        self.assertEqual(record["projectName"], "一括変更案件")
+        self.assertEqual(response.json["record"], record)
+        self.assertEqual(response.json["equipment"], equipment)
+        self.assertEqual(response.json["jumperChecks"], {"W1": True, "W2": False})
+        self.assertEqual([file["fileName"] for file in record["files"]], ["new.txt"])
+        self.assertEqual(self.client.get(f"/api/records/{record_id}/equipment").json, equipment)
+        self.assertEqual(
+            self.client.get(f"/api/records/{record_id}/jumpers").json,
+            [{"name": "W1", "setting": "1-2", "confirmed": True},
+             {"name": "W2", "setting": "1-2", "confirmed": False}],
+        )
+        restarted = create_app(dict(self.app.config)).test_client()
+        with restarted.session_transaction() as session:
+            session["username"] = "operator"
+        self.assertEqual(restarted.get(f"/api/records/{record_id}/equipment").json, equipment)
+        self.assertTrue(restarted.get(f"/api/records/{record_id}/jumpers").json[0]["confirmed"])
+
+    def test_unified_details_rejects_invalid_input_without_partial_save(self):
+        self.login()
+        record_id = self.client.post(
+            "/api/records",
+            data=self.record_data(resultFiles=(io.BytesIO(b"original"), "original.txt")),
+            headers={"X-CSRF-Token": self.csrf_token},
+        ).json["id"]
+        original = self.client.get("/api/records").json[0]
+        equipment = self.client.get(f"/api/records/{record_id}/equipment").json
+        jumpers = self.client.get(f"/api/records/{record_id}/jumpers").json
+        invalid_equipment = json.loads(json.dumps(equipment))
+        invalid_equipment["boards"][0]["name"] = "OTHER"
+        for extra in (
+            {"equipment": "not-json"},
+            {"equipment": json.dumps(invalid_equipment)},
+            {"jumperChecks": json.dumps({"W1": True})},
+            {"jumperChecks": json.dumps({"W1": 1, "W2": False})},
+            {"registrationDate": "20260230"},
+            {"removeFileIds": "999999"},
+        ):
+            with self.subTest(extra=extra):
+                data = self.record_data(
+                    projectName="保存されない案件", equipment=json.dumps(equipment),
+                    jumperChecks=json.dumps({"W1": True, "W2": True}),
+                    removeFileIds=str(original["files"][0]["id"]),
+                    resultFiles=(io.BytesIO(b"replacement"), "replacement.txt"),
+                )
+                data.update(extra)
+                response = self.client.put(
+                    f"/api/records/{record_id}/details", data=data,
+                    headers={"X-CSRF-Token": self.csrf_token},
+                )
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(self.client.get("/api/records").json[0], original)
+                self.assertEqual(self.client.get(f"/api/records/{record_id}/equipment").json, equipment)
+                self.assertEqual(self.client.get(f"/api/records/{record_id}/jumpers").json, jumpers)
+        self.assertEqual(self.client.put(f"/api/records/{record_id}/details", data={}).status_code, 400)
+        self.assertEqual(self.client.put(
+            "/api/records/999999/details",
+            data=self.record_data(equipment=json.dumps(equipment), jumperChecks=json.dumps({"W1": False, "W2": False})),
+            headers={"X-CSRF-Token": self.csrf_token},
+        ).status_code, 404)
+
+    def test_unified_details_rolls_back_database_failure(self):
+        self.login()
+        record_id = self.client.post(
+            "/api/records", data=self.record_data(resultFiles=(io.BytesIO(b"original"), "original.txt")),
+            headers={"X-CSRF-Token": self.csrf_token},
+        ).json["id"]
+        original = self.client.get("/api/records").json[0]
+        equipment = self.client.get(f"/api/records/{record_id}/equipment").json
+        modified_equipment = json.loads(json.dumps(equipment))
+        modified_equipment["boards"][0]["serialNumber"] = "NOT-SAVED"
+        original_connect = sqlite3.connect
+
+        class FailingConnection(sqlite3.Connection):
+            def executemany(self, statement, parameters):
+                if "INSERT INTO jumper_checks" in statement:
+                    raise sqlite3.OperationalError("test failure after equipment save")
+                return super().executemany(statement, parameters)
+
+        with patch("backend.app.sqlite3.connect", side_effect=lambda *args, **kwargs: original_connect(*args, factory=FailingConnection, **kwargs)):
+            with self.assertRaises(sqlite3.OperationalError):
+                self.client.put(
+                    f"/api/records/{record_id}/details",
+                    data=self.record_data(
+                        projectName="保存されない案件", equipment=json.dumps(modified_equipment),
+                        jumperChecks=json.dumps({"W1": True, "W2": True}),
+                        removeFileIds=str(original["files"][0]["id"]),
+                        resultFiles=(io.BytesIO(b"replacement"), "replacement.txt"),
+                    ),
+                    headers={"X-CSRF-Token": self.csrf_token},
+                )
+        self.assertEqual(self.client.get("/api/records").json[0], original)
+        self.assertEqual(self.client.get(f"/api/records/{record_id}/equipment").json, equipment)
+        self.assertTrue(all(not jumper["confirmed"] for jumper in self.client.get(f"/api/records/{record_id}/jumpers").json))
+        self.assertEqual(self.app.test_client().put(f"/api/records/{record_id}/details", data={}).status_code, 401)
 
     def test_rejects_record_write_without_csrf(self):
         self.login()

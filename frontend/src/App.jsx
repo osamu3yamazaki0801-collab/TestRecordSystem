@@ -117,6 +117,7 @@ function App() {
   const registerForm = useRef(null);
   const [authenticated, setAuthenticated] = useState(false);
   const [username, setUsername] = useState('');
+  const [detailRecordId] = useState(() => new URLSearchParams(window.location.search).get('recordId'));
   const [section, setSection] = useState('dashboardSection');
   const [loginError, setLoginError] = useState('');
   const [sessionMessage, setSessionMessage] = useState('');
@@ -134,6 +135,10 @@ function App() {
   const [deletingRecordId, setDeletingRecordId] = useState(null);
   const [selectedRecordId, setSelectedRecordId] = useState(null);
   const [detailRecord, setDetailRecord] = useState(null);
+  const [detailEquipment, setDetailEquipment] = useState(null);
+  const [detailJumpers, setDetailJumpers] = useState(null);
+  const savedDetails = useRef({ equipment: null, jumpers: null });
+  const [detailMessage, setDetailMessage] = useState({ text: '', type: '' });
   const [recordDirty, setRecordDirty] = useState(false);
   const [newRecordOpen, setNewRecordOpen] = useState(false);
 
@@ -156,7 +161,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!authenticated || section !== 'dashboardSection') return undefined;
+    if (!authenticated || detailRecordId !== null || section !== 'dashboardSection') return undefined;
     let active = true;
     async function loadDashboard() {
       try {
@@ -203,7 +208,55 @@ function App() {
     return () => {
       active = false;
     };
-  }, [authenticated, section]);
+  }, [authenticated, section, detailRecordId]);
+
+  useEffect(() => {
+    if (!authenticated || detailRecordId === null) return undefined;
+    let active = true;
+    if (!/^[1-9]\d*$/.test(detailRecordId)) {
+      setDetailMessage({ text: '記録IDが正しくありません。', type: 'error' });
+      return undefined;
+    }
+    setDetailMessage({ text: '記録を読み込み中...', type: '' });
+    Promise.all([
+      apiRequest('/api/records', csrfToken.current),
+      apiRequest(`/api/records/${detailRecordId}/equipment`, csrfToken.current),
+      apiRequest(`/api/records/${detailRecordId}/jumpers`, csrfToken.current),
+    ]).then(([result, equipment, jumpers]) => {
+      if (!active) return;
+      const record = result.find((item) => String(item.id) === detailRecordId);
+      if (!record) {
+        setDetailMessage({ text: '記録が見つかりません。削除された可能性があります。', type: 'error' });
+        return;
+      }
+      handleEditRecord(record);
+      setDetailEquipment(equipment);
+      setDetailJumpers(jumpers);
+      savedDetails.current = { equipment, jumpers };
+      setDetailMessage({ text: '', type: '' });
+    }).catch((error) => {
+      if (!active) return;
+      setDetailMessage({ text: error.message, type: 'error' });
+      if (error.status === 401) {
+        csrfToken.current = '';
+        setAuthenticated(false);
+        setLoginError(error.message);
+      }
+    });
+    return () => { active = false; };
+  }, [authenticated, detailRecordId]);
+
+  useEffect(() => {
+    if (!authenticated || detailRecordId !== null || section !== 'searchSection') return undefined;
+    const refresh = () => setSearchFilters((filters) => ({ ...filters }));
+    const handleVisibility = () => { if (document.visibilityState === 'visible') refresh(); };
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [authenticated, detailRecordId, section]);
 
   useEffect(() => {
     if (!authenticated || section !== 'searchSection') return undefined;
@@ -239,6 +292,11 @@ function App() {
     }
   }
 
+  function openRecordDetails(record) {
+    setSelectedRecordId(record.id);
+    window.open(`/?recordId=${encodeURIComponent(record.id)}`, '_blank', 'noopener,noreferrer');
+  }
+
   function openNewRecord() {
     clearRegistrationDraft();
     setRegisterMessage({ text: '', type: '' });
@@ -261,6 +319,9 @@ function App() {
     setExistingFiles([]);
     setRemovedFileIds([]);
     setRecordDirty(false);
+    setDetailEquipment(null);
+    setDetailJumpers(null);
+    savedDetails.current = { equipment: null, jumpers: null };
   }
 
   // ログイン処理。
@@ -323,6 +384,22 @@ function App() {
     const form = event.currentTarget;
     const formData = new FormData(form);
     const isEditing = editingRecordId !== null;
+    if (isEditing) {
+      if (!detailEquipment || !detailJumpers) {
+        setRegisterMessage({ text: '詳細情報の読み込みが完了していません。', type: 'error' });
+        return;
+      }
+      if (Object.values(detailEquipment).some((rows) => rows.some((row) => (
+        Object.values(row).some((value) => typeof value !== 'string' || value.length > 100)
+      )))) {
+        setRegisterMessage({ text: '機器情報の各項目は100文字以内で入力してください。', type: 'error' });
+        return;
+      }
+      formData.set('equipment', JSON.stringify(detailEquipment));
+      formData.set('jumperChecks', JSON.stringify(Object.fromEntries(
+        detailJumpers.map((jumper) => [jumper.name, jumper.confirmed]),
+      )));
+    }
     if (!isEditing) {
       ['projectName', 'productNo', 'registrationDate'].forEach((name) => {
         formData.set(name, registrationValues[name]);
@@ -362,7 +439,7 @@ function App() {
     setRegistering(true);
     try {
       const result = await apiRequest(
-        isEditing ? `/api/records/${encodeURIComponent(editingRecordId)}` : '/api/records',
+        isEditing ? `/api/records/${encodeURIComponent(editingRecordId)}/details` : '/api/records',
         csrfToken.current,
         {
           method: isEditing ? 'PUT' : 'POST',
@@ -370,10 +447,11 @@ function App() {
         },
       );
       if (isEditing) {
-        const updatedRecords = await apiRequest('/api/records', csrfToken.current);
-        const updatedRecord = updatedRecords.find((record) => record.id === editingRecordId);
-        if (updatedRecord) handleEditRecord(updatedRecord);
-        setSearchFilters((filters) => ({ ...filters }));
+        handleEditRecord(result.record);
+        const updatedJumpers = detailJumpers.map((jumper) => ({ ...jumper, confirmed: result.jumperChecks[jumper.name] }));
+        setDetailEquipment(result.equipment);
+        setDetailJumpers(updatedJumpers);
+        savedDetails.current = { equipment: result.equipment, jumpers: updatedJumpers };
       } else {
         setRecords((current) => [{ id: result.id, ...values, files: [] }, ...current]);
         setSelectedRecordId(result.id);
@@ -463,8 +541,10 @@ function App() {
   // 登録フォームの入力をクリアして、今日の日付を再設定する。
   function cancelRegister() {
     if (detailRecord) {
-      if (recordDirty && !window.confirm('未保存の記録の変更を破棄しますか？')) return;
+      if (recordDirty && !window.confirm('未保存の変更をすべて破棄しますか？')) return;
       handleEditRecord(detailRecord);
+      setDetailEquipment(savedDetails.current.equipment);
+      setDetailJumpers(savedDetails.current.jumpers);
     } else {
       closeNewRecord();
     }
@@ -516,6 +596,39 @@ function App() {
       onChange={() => setRecordDirty(true)}
     />
   );
+
+  if (detailRecordId !== null) {
+    return (
+      <main className="record-detail-page">
+        {detailRecord ? (
+          <RecordDetails
+            key={detailRecord.id}
+            record={detailRecord}
+            csrfToken={csrfToken.current}
+            onClose={() => window.close()}
+            recordDirty={recordDirty}
+            equipment={detailEquipment}
+            setEquipment={setDetailEquipment}
+            jumpers={detailJumpers}
+            setJumpers={setDetailJumpers}
+            onDirty={() => setRecordDirty(true)}
+            cancelRegister={cancelRegister}
+            registerMessage={registerMessage}
+            registering={registering}
+            registrationForm={registrationForm}
+            setAuthenticated={setAuthenticated}
+            setLoginError={setLoginError}
+          />
+        ) : (
+          <>
+            <h1>記録の詳細</h1>
+            <Message type={detailMessage.type}>{detailMessage.text || '記録を読み込み中...'}</Message>
+            <a className="file-link" href="/">概要へ</a>
+          </>
+        )}
+      </main>
+    );
+  }
 
   return (
     <div className="app-shell active">
@@ -656,15 +769,13 @@ function App() {
                       onClick={() => setSelectedRecordId(record.id)}
                       onDoubleClick={(event) => {
                         if (event.target.closest('button, a')) return;
-                        setSelectedRecordId(record.id);
-                        handleEditRecord(record);
+                        openRecordDetails(record);
                       }}
                       onKeyDown={(event) => {
                         if (event.target !== event.currentTarget) return;
                         if (event.key === 'Enter') {
                           event.preventDefault();
-                          setSelectedRecordId(record.id);
-                          handleEditRecord(record);
+                          openRecordDetails(record);
                         } else if (event.key === ' ') {
                           event.preventDefault();
                           setSelectedRecordId(record.id);
@@ -678,16 +789,16 @@ function App() {
                       <td>{record.manager}</td>
                       <td>
                         <div className="record-actions">
-                          <button
-                            type="button"
+                          <a
                             className="copy-button secondary-button"
-                            onClick={() => {
-                              setSelectedRecordId(record.id);
-                              handleEditRecord(record);
-                            }}
+                            href={`/?recordId=${encodeURIComponent(record.id)}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            title="別タブで詳細を開く"
+                            onClick={() => setSelectedRecordId(record.id)}
                           >
                             詳細
-                          </button>
+                          </a>
                           <button
                             type="button"
                             className="copy-button secondary-button"
@@ -717,19 +828,6 @@ function App() {
         <NewRecordDialog onClose={closeNewRecord} registering={registering}>
           {registrationForm}
         </NewRecordDialog>
-      )}
-      {section === 'searchSection' && detailRecord && (
-        <RecordDetails
-          key={detailRecord.id}
-          record={detailRecord}
-          csrfToken={csrfToken.current}
-          onClose={() => { setDetailRecord(null); clearRegistrationDraft(); setRegisterMessage({ text: '', type: '' }); }}
-          recordDirty={recordDirty}
-          registering={registering}
-          registrationForm={registrationForm}
-          setAuthenticated={setAuthenticated}
-          setLoginError={setLoginError}
-        />
       )}
     </div>
   );
@@ -766,7 +864,7 @@ function NewRecordDialog({ children, onClose, registering }) {
 
 function RegistrationForm({ registerForm, handleRegister, registrationValues, setRegistrationValues, editingRecordId, existingFiles, removedFileIds, setRemovedFileIds, registering, cancelRegister, registerMessage, onChange }) {
   return (
-    <form ref={registerForm} className="form-panel" onSubmit={handleRegister} onChange={onChange}>
+    <form id={editingRecordId !== null ? 'record-edit-form' : undefined} ref={registerForm} className="form-panel" onSubmit={handleRegister} onChange={onChange}>
       <fieldset className="record-form-fields" disabled={registering}>
         <div className="form-grid">
           <label className="field"><span>試験番号</span><input name="trialNo" type="text" maxLength="20" placeholder="例: T-001" value={registrationValues.trialNo} onChange={(event) => setRegistrationValues((values) => ({ ...values, trialNo: event.target.value }))} required /></label>
@@ -804,78 +902,43 @@ function RegistrationForm({ registerForm, handleRegister, registrationValues, se
             ) : <p className="field-help">添付ファイルはありません。</p>}
           </div>
         )}
-        <div className="button-row">
-          <button type="submit" className="primary-button" disabled={registering}>{registering ? '処理中...' : editingRecordId === null ? '登録' : '変更を保存'}</button>
-          <button type="button" className="secondary-button" onClick={cancelRegister}>{editingRecordId === null ? 'キャンセル' : '変更をキャンセル'}</button>
-        </div>
+        {editingRecordId === null && (
+          <div className="button-row">
+            <button type="submit" className="primary-button" disabled={registering}>{registering ? '処理中...' : '登録'}</button>
+            <button type="button" className="secondary-button" onClick={cancelRegister}>キャンセル</button>
+          </div>
+        )}
       </fieldset>
-      {registerMessage.text && <Message type={registerMessage.type}>{registerMessage.text}</Message>}
+      {editingRecordId === null && registerMessage.text && <Message type={registerMessage.type}>{registerMessage.text}</Message>}
     </form>
   );
 }
 
-function RecordDetails({ record, csrfToken, onClose, recordDirty, registering, registrationForm, setAuthenticated, setLoginError }) {
-  const dialog = useRef(null);
-  const [jumpers, setJumpers] = useState(null);
-  const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState({ text: '', type: '' });
-  const [equipmentDirty, setEquipmentDirty] = useState(false);
+function RecordDetails({ record, onClose, recordDirty, registering, registrationForm, equipment, setEquipment, jumpers, setJumpers, onDirty, cancelRegister, registerMessage }) {
 
   function closeDetails() {
     if (registering) return;
-    if ((recordDirty || equipmentDirty) && !window.confirm('未保存の変更を破棄して閉じますか？')) return;
     onClose();
   }
 
   useEffect(() => {
-    const element = dialog.current;
-    element.showModal();
-    return () => element.close();
-  }, []);
+    document.title = `${record.trialNo} - 記録の詳細`;
+  }, [record.trialNo]);
 
   useEffect(() => {
-    let active = true;
-    apiRequest(`/api/records/${record.id}/jumpers`, csrfToken).then((result) => {
-      if (active) setJumpers(result);
-    }).catch((error) => {
-      if (!active) return;
-      setMessage({ text: error.message, type: 'error' });
-      if (error.status === 401) {
-        setLoginError(error.message);
-        setAuthenticated(false);
-      }
-    });
-    return () => { active = false; };
-  }, [record.id, csrfToken, setAuthenticated, setLoginError]);
-
-  async function toggleConfirmation(jumper) {
-    setSaving(true);
-    setMessage({ text: '', type: '' });
-    try {
-      const result = await apiRequest(`/api/records/${record.id}/jumpers/${jumper.name}`, csrfToken, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ confirmed: !jumper.confirmed }),
-      });
-      setJumpers((current) => current.map((item) => item.name === result.name ? result : item));
-      setMessage({ text: `${jumper.name}の確認結果を保存しました。`, type: 'success' });
-    } catch (error) {
-      setMessage({ text: error.message, type: 'error' });
-      if (error.status === 401) {
-        setLoginError(error.message);
-        setAuthenticated(false);
-      }
-    } finally {
-      setSaving(false);
-    }
-  }
+    const handleBeforeUnload = (event) => {
+      if (!recordDirty && !registering) return;
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [recordDirty, registering]);
 
   return (
-    <dialog
-      ref={dialog}
-      className="record-detail-dialog"
+    <section
+      className="record-detail-content"
       aria-labelledby="record-detail-title"
-      onCancel={(event) => { event.preventDefault(); closeDetails(); }}
       onKeyDown={(event) => {
         if (event.key === 'Escape') {
           event.preventDefault();
@@ -884,7 +947,7 @@ function RecordDetails({ record, csrfToken, onClose, recordDirty, registering, r
       }}
     >
       <header className="record-detail-heading">
-        <h2 id="record-detail-title">記録の詳細</h2>
+        <h1 id="record-detail-title">記録の詳細 <span className="detail-trial-no">{record.trialNo}</span></h1>
         <button
           type="button"
           className="detail-close"
@@ -895,10 +958,11 @@ function RecordDetails({ record, csrfToken, onClose, recordDirty, registering, r
         >{ '\u00d7' }</button>
       </header>
       {registrationForm}
+      <EquipmentForm equipment={equipment} setEquipment={setEquipment} disabled={registering} onDirty={onDirty} />
       <h3 className="jumper-heading">ジャンパ設定</h3>
       {jumpers ? (
         <div className="equipment-table-wrap jumper-table-wrap">
-          <table className="jumper-table equipment-table" aria-label="ジャンパ設定の確認" aria-busy={saving}>
+          <table className="jumper-table equipment-table" aria-label="ジャンパ設定の確認" aria-busy={registering}>
             <thead><tr><th scope="col">ジャンパ名</th><th scope="col">設定</th><th scope="col">確認結果</th></tr></thead>
             <tbody>
               {jumpers.map((jumper) => (
@@ -911,8 +975,11 @@ function RecordDetails({ record, csrfToken, onClose, recordDirty, registering, r
                         type="checkbox"
                         aria-label={`${jumper.name}の設定を確認`}
                         checked={jumper.confirmed}
-                        disabled={saving}
-                        onChange={() => toggleConfirmation(jumper)}
+                        disabled={registering}
+                        onChange={() => {
+                          setJumpers((current) => current.map((item) => item.name === jumper.name ? { ...item, confirmed: !item.confirmed } : item));
+                          onDirty();
+                        }}
                       />
                       <span aria-hidden="true">{jumper.confirmed ? '\u2705' : '\u25a1'}</span>
                     </label>
@@ -922,17 +989,16 @@ function RecordDetails({ record, csrfToken, onClose, recordDirty, registering, r
             </tbody>
           </table>
         </div>
-      ) : !message.text && <Message>読み込み中...</Message>}
-      <Message type={message.type}>{saving ? '保存中...' : message.text}</Message>
-      <EquipmentForm
-        recordId={record.id}
-        csrfToken={csrfToken}
-        dirty={equipmentDirty}
-        setDirty={setEquipmentDirty}
-        setAuthenticated={setAuthenticated}
-        setLoginError={setLoginError}
-      />
-    </dialog>
+      ) : <Message>読み込み中...</Message>}
+      <div className="button-row">
+        <button type="submit" form="record-edit-form" className="primary-button" disabled={registering || !equipment || !jumpers}>
+          {registering ? '保存中...' : '変更を保存'}
+        </button>
+        <button type="button" className="secondary-button" disabled={registering} onClick={cancelRegister}>変更をキャンセル</button>
+        {recordDirty && <span className="status-text warning">未保存</span>}
+      </div>
+      {registerMessage.text && <Message type={registerMessage.type}>{registerMessage.text}</Message>}
+    </section>
   );
 }
 
@@ -963,66 +1029,22 @@ const EQUIPMENT_SECTIONS = [
   },
 ];
 
-function EquipmentForm({ recordId, csrfToken, dirty, setDirty, setAuthenticated, setLoginError }) {
-  const [equipment, setEquipment] = useState(null);
-  const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState({ text: '', type: '' });
-
-  useEffect(() => {
-    let active = true;
-    apiRequest(`/api/records/${recordId}/equipment`, csrfToken).then((result) => {
-      if (active) setEquipment(result);
-    }).catch((error) => {
-      if (!active) return;
-      setMessage({ text: error.message, type: 'error' });
-      if (error.status === 401) {
-        setLoginError(error.message);
-        setAuthenticated(false);
-      }
-    });
-    return () => { active = false; };
-  }, [recordId, csrfToken, setAuthenticated, setLoginError]);
-
+function EquipmentForm({ equipment, setEquipment, disabled, onDirty }) {
   function changeField(group, rowIndex, field, value) {
     setEquipment((current) => ({
       ...current,
       [group]: current[group].map((row, index) => index === rowIndex ? { ...row, [field]: value } : row),
     }));
-    setDirty(true);
-    setMessage({ text: '', type: '' });
-  }
-
-  async function saveEquipment(event) {
-    event.preventDefault();
-    setSaving(true);
-    setMessage({ text: '', type: '' });
-    try {
-      const result = await apiRequest(`/api/records/${recordId}/equipment`, csrfToken, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(equipment),
-      });
-      setEquipment(result);
-      setDirty(false);
-      setMessage({ text: '機器情報を保存しました。', type: 'success' });
-    } catch (error) {
-      setMessage({ text: error.message, type: 'error' });
-      if (error.status === 401) {
-        setLoginError(error.message);
-        setAuthenticated(false);
-      }
-    } finally {
-      setSaving(false);
-    }
+    onDirty();
   }
 
   if (!equipment) {
-    return <Message type={message.type}>{message.text || '機器情報を読み込み中...'}</Message>;
+    return <Message>機器情報を読み込み中...</Message>;
   }
 
   return (
-    <form className="equipment-form" onSubmit={saveEquipment} aria-busy={saving}>
-      <fieldset disabled={saving}>
+    <div className="equipment-form" aria-busy={disabled}>
+      <fieldset disabled={disabled}>
         {EQUIPMENT_SECTIONS.map((group) => (
           <section key={group.key} aria-labelledby={`equipment-${group.key}-heading`}>
             <h3 id={`equipment-${group.key}-heading`} className="jumper-heading">{group.title}</h3>
@@ -1052,15 +1074,8 @@ function EquipmentForm({ recordId, csrfToken, dirty, setDirty, setAuthenticated,
             </div>
           </section>
         ))}
-        <div className="equipment-save-row">
-          <button type="submit" className="primary-button" disabled={!dirty || saving}>
-            {saving ? '保存中...' : '機器情報を保存'}
-          </button>
-          {dirty && <span className="status-text warning">未保存</span>}
-        </div>
       </fieldset>
-      <Message type={message.type}>{message.text}</Message>
-    </form>
+    </div>
   );
 }
 

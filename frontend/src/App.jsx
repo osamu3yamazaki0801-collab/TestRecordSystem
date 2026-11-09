@@ -5,6 +5,11 @@ import TrialResults from './TrialResults';
 // 画面遷移ごとの見出し文言と検索条件の初期値をまとめて管理する。
 const MAX_FILE_SIZE = 100 * 1024 * 1024;
 const MAX_TOTAL_FILE_SIZE = 100 * 1024 * 1024;
+const MIN_COMMON_PANEL_WIDTH = 220;
+const MAX_COMMON_PANEL_WIDTH = 640;
+const MIN_WORKSPACE_WIDTH = 280;
+const DETAIL_RESIZER_WIDTH = 12;
+const DETAIL_COLUMN_GAP = 24;
 const SECTION_DETAILS = {
   dashboardSection: {
     title: '試験記録の管理',
@@ -911,13 +916,54 @@ function RegistrationForm({ registerForm, handleRegister, registrationValues, se
 
 function RecordDetails({ record, onClose, recordDirty, registering, registrationForm, equipment, setEquipment, jumpers, setJumpers, onDirty, cancelRegister, registerMessage, pendingFiles, existingFiles, onFilesChanged, csrfToken, setAuthenticated, setLoginError }) {
   const [activeTab, setActiveTab] = useState(0);
+  const [commonPanelWidth, setCommonPanelWidth] = useState(240);
   const [fileActionPending, setFileActionPending] = useState(false);
   const [fileActionMessage, setFileActionMessage] = useState({ text: '', type: '' });
+  const dividerDrag = useRef(null);
   const detailTabs = [
     '試験情報',
     '外観チェック',
     '試験結果',
   ];
+
+  function getMaxCommonPanelWidth(divider) {
+    const contentWidth = divider.parentElement.getBoundingClientRect().width;
+    const reservedWidth = MIN_WORKSPACE_WIDTH + DETAIL_RESIZER_WIDTH + DETAIL_COLUMN_GAP * 2;
+    return Math.max(MIN_COMMON_PANEL_WIDTH, Math.min(MAX_COMMON_PANEL_WIDTH, contentWidth - reservedWidth));
+  }
+
+  function startDividerDrag(event) {
+    event.preventDefault();
+    dividerDrag.current = { pointerX: event.clientX, panelWidth: commonPanelWidth };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function moveDivider(event) {
+    if (!dividerDrag.current) return;
+    const drag = dividerDrag.current;
+    const maxWidth = getMaxCommonPanelWidth(event.currentTarget);
+    setCommonPanelWidth(Math.min(
+      maxWidth,
+      Math.max(MIN_COMMON_PANEL_WIDTH, drag.panelWidth + event.clientX - drag.pointerX),
+    ));
+  }
+
+  function stopDividerDrag(event) {
+    dividerDrag.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }
+
+  function resizeDividerWithKeyboard(event) {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const maxWidth = getMaxCommonPanelWidth(event.currentTarget);
+    const nextWidth = event.key === 'Home' ? MIN_COMMON_PANEL_WIDTH
+      : event.key === 'End' ? maxWidth
+        : commonPanelWidth + (event.key === 'ArrowRight' ? 16 : -16);
+    setCommonPanelWidth(Math.min(maxWidth, Math.max(MIN_COMMON_PANEL_WIDTH, nextWidth)));
+  }
 
   async function uploadTrialResults(event) {
     const input = event.currentTarget;
@@ -993,6 +1039,7 @@ function RecordDetails({ record, onClose, recordDirty, registering, registration
     <section
       className="record-detail-content"
       aria-label="記録の詳細"
+      style={{ '--detail-common-width': `${commonPanelWidth}px` }}
       onKeyDown={(event) => {
         if (event.key === 'Escape') {
           event.preventDefault();
@@ -1011,6 +1058,22 @@ function RecordDetails({ record, onClose, recordDirty, registering, registration
         </div>
         {registerMessage.text && <Message type={registerMessage.type}>{registerMessage.text}</Message>}
       </div>
+      <div
+        className="record-detail-resizer"
+        role="separator"
+        aria-label="共通情報の幅を調整"
+        aria-orientation="vertical"
+        aria-valuemin={MIN_COMMON_PANEL_WIDTH}
+        aria-valuemax={MAX_COMMON_PANEL_WIDTH}
+        aria-valuenow={commonPanelWidth}
+        aria-valuetext={`共通情報 ${commonPanelWidth} ピクセル`}
+        tabIndex={0}
+        onPointerDown={startDividerDrag}
+        onPointerMove={moveDivider}
+        onPointerUp={stopDividerDrag}
+        onPointerCancel={stopDividerDrag}
+        onKeyDown={resizeDividerWithKeyboard}
+      />
       <div className="record-detail-workspace">
       <div className="record-detail-tabs" role="tablist" aria-label="記録詳細">
         {detailTabs.map((title, index) => (

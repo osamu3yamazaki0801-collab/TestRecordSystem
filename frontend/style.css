@@ -1268,7 +1268,7 @@ tbody tr:last-child td {
 
 .record-detail-content {
   display: grid;
-  grid-template-columns: minmax(300px, 340px) minmax(0, 1fr);
+  grid-template-columns: minmax(220px, var(--detail-common-width, 240px)) 12px minmax(280px, 1fr);
   align-items: start;
   gap: 24px;
   min-width: 0;
@@ -1289,6 +1289,40 @@ tbody tr:last-child td {
 
 .record-detail-workspace {
   min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.record-detail-resizer {
+  display: flex;
+  min-height: 240px;
+  align-self: stretch;
+  align-items: stretch;
+  justify-content: center;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+}
+
+.record-detail-resizer::before {
+  width: 2px;
+  border-radius: 2px;
+  background: #b6c8cf;
+  content: '';
+  transition: background-color 0.15s ease, width 0.15s ease;
+}
+
+.record-detail-resizer:hover::before,
+.record-detail-resizer:focus-visible::before,
+.record-detail-resizer:active::before {
+  width: 4px;
+  background: #195f7c;
+}
+
+.record-detail-resizer:focus-visible {
+  outline: 2px solid #195f7c;
+  outline-offset: 2px;
 }
 
 .record-detail-dialog {
@@ -1565,6 +1599,10 @@ tbody tr:last-child td {
 @media (max-width: 760px) {
   .record-detail-content {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .record-detail-resizer {
+    display: none;
   }
 
   .result-file-actions {

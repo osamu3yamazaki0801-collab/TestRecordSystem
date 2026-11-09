@@ -15,6 +15,7 @@ from flask import Flask, abort, jsonify, request, send_file, send_from_directory
 from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.security import check_password_hash
 from waitress import serve
+from backend.trial_results import parse_trial_results_file
 
 
 # ファイル単体と1回の登録で送信できるファイル合計の上限は、それぞれ100MB。
@@ -629,6 +630,11 @@ def create_app(test_config=None):
         jumper_checks = None
         if combined:
             try:
+                for file_name, _content_type, file_data in files:
+                    parse_trial_results_file(file_name, file_data)
+            except ValueError as error:
+                return jsonify(error=str(error)), 400
+            try:
                 equipment = json.loads(request.form.get("equipment", ""))
                 jumper_checks = json.loads(request.form.get("jumperChecks", ""))
             except (ValueError, TypeError):
@@ -773,6 +779,39 @@ def create_app(test_config=None):
             mimetype=row["file_content_type"] or "application/octet-stream",
             max_age=0,
         )
+
+    @app.get("/api/records/<int:record_id>/files/<int:file_id>/results")
+    @require_login
+    def get_trial_results(record_id, file_id):
+        with closing(connect_db()) as connection:
+            row = connection.execute(
+                "SELECT file_name, file_data FROM record_files WHERE record_id = ? AND id = ?",
+                (record_id, file_id),
+            ).fetchone()
+        if not row:
+            abort(404)
+        try:
+            return jsonify(parse_trial_results_file(row["file_name"], row["file_data"]))
+        except ValueError as error:
+            return jsonify(error=str(error)), 400
+
+    @app.post("/api/records/<int:record_id>/results-preview")
+    @require_login
+    @require_csrf
+    def preview_trial_results(record_id):
+        with closing(connect_db()) as connection:
+            if not connection.execute("SELECT id FROM records WHERE id = ?", (record_id,)).fetchone():
+                abort(404)
+        upload = request.files.get("resultFile")
+        if not upload or not upload.filename:
+            return jsonify(error="試験結果CSVを選択してください。"), 400
+        content = upload.read(MAX_FILE_SIZE + 1)
+        if len(content) > MAX_FILE_SIZE:
+            return jsonify(error="添付ファイルは1件あたり100 MB以下にしてください。"), 413
+        try:
+            return jsonify(parse_trial_results_file(upload.filename, content))
+        except ValueError as error:
+            return jsonify(error=str(error)), 400
 
     # 既存クライアント向けに、レコードの最初の添付ファイルを返す旧URLも残す。
     @app.get("/api/records/<int:record_id>/file")

@@ -11,6 +11,58 @@ from unittest.mock import patch
 from werkzeug.security import generate_password_hash
 
 from backend.app import MAX_FILE_SIZE, MAX_REQUEST_SIZE, create_app
+from backend.trial_results import parse_trial_results
+
+
+SAMPLE_RESULTS_CSV = """品名,PEX32RZ_SAMPLE
+仕様書番号,6G3RB652 Rev.4
+試験番号,1234567890
+
+試験結果 1
+,,,,,温度 1(℃),-20,,,温度 2(℃),25,,,温度 3(℃),70,,
+No.,試験名称,下限値,上限値,単位,MIN,判定,MAX,判定,MIN,判定,MAX,判定,MIN,判定,MAX,判定
+B5-1-01,"CPU入力, AI00",-122,122,count,-0.01,PASS,0.01,PASS,-0.01,PASS,0.01,PASS,-0.01,PASS,0.01,PASS
+B20-1,温湿度センサ,-,-,count,25,,25,,25,,25,,25,,25,
+
+試験結果 2
+,,,,温度 1(℃),-20,温度 2(℃),25,温度 3(℃),70
+No.,試験名称,規定値,単位,測定値,判定,測定値,判定,測定値,判定
+B3-1-01,デジタル入力,00000001,HEX,00000001,PASS,00000001,PASS,00000001,PASS
+"""
+
+
+class TrialResultsCsvTests(unittest.TestCase):
+    def test_csv_parses_both_tables_without_changing_values(self):
+        result = parse_trial_results(SAMPLE_RESULTS_CSV.encode("utf-8-sig"))
+        self.assertEqual(result["metadata"]["品名"], "PEX32RZ_SAMPLE")
+        self.assertEqual(result["metadata"]["仕様書番号"], "6G3RB652 Rev.4")
+        self.assertEqual(result["metadata"]["試験番号"], "1234567890")
+        analog, digital = result["sections"]
+        self.assertEqual([item["value"] for item in analog["temperatures"]], ["-20", "25", "70"])
+        self.assertEqual(analog["rows"][0]["name"], "CPU入力, AI00")
+        self.assertEqual(analog["rows"][0]["measurements"][0]["min"], "-0.01")
+        self.assertEqual(analog["summary"], {"PASS": 1, "FAIL": 0, "UNJUDGED": 1})
+        self.assertEqual(analog["rows"][1]["lowerLimit"], "-")
+        self.assertEqual(analog["rows"][1]["measurements"][0]["minJudgement"], "")
+        self.assertEqual(digital["rows"][0]["specifiedValue"], "00000001")
+        self.assertEqual(digital["rows"][0]["measurements"][0]["value"], "00000001")
+
+    def test_csv_supports_shift_jis_and_fail_judgements(self):
+        content = SAMPLE_RESULTS_CSV.replace("-0.01,PASS", "-0.01,FAIL", 1)
+        result = parse_trial_results(content.encode("cp932"))
+        self.assertEqual(result["sections"][0]["rows"][0]["judgement"], "FAIL")
+        self.assertEqual(result["sections"][0]["summary"]["FAIL"], 1)
+
+    def test_csv_rejects_invalid_structure(self):
+        for text in (
+            "品名,サンプル\n", "not csv", SAMPLE_RESULTS_CSV.replace("No.,試験名称", "No.,その他", 1),
+            SAMPLE_RESULTS_CSV.replace("B3-1-01,デジタル入力,", "B3-1-01,"),
+            SAMPLE_RESULTS_CSV + "試験結果 1\n",
+            SAMPLE_RESULTS_CSV.replace('"CPU入力, AI00"', '"CPU入力, AI00'),
+        ):
+            with self.subTest(text=text[:40]):
+                with self.assertRaises(ValueError):
+                    parse_trial_results(text.encode("utf-8"))
 
 
 class LedgerAppTests(unittest.TestCase):
@@ -361,7 +413,7 @@ class LedgerAppTests(unittest.TestCase):
                 projectName="一括変更案件", equipment=json.dumps(equipment),
                 jumperChecks=json.dumps({"W1": True, "W2": False}),
                 removeFileIds=str(file_id),
-                resultFiles=(io.BytesIO(b"new"), "new.txt"),
+                resultFiles=(io.BytesIO(SAMPLE_RESULTS_CSV.encode("utf-8")), "new.csv"),
             ),
             headers={"X-CSRF-Token": self.csrf_token},
         )
@@ -371,7 +423,7 @@ class LedgerAppTests(unittest.TestCase):
         self.assertEqual(response.json["record"], record)
         self.assertEqual(response.json["equipment"], equipment)
         self.assertEqual(response.json["jumperChecks"], {"W1": True, "W2": False})
-        self.assertEqual([file["fileName"] for file in record["files"]], ["new.txt"])
+        self.assertEqual([file["fileName"] for file in record["files"]], ["new.csv"])
         self.assertEqual(self.client.get(f"/api/records/{record_id}/equipment").json, equipment)
         self.assertEqual(
             self.client.get(f"/api/records/{record_id}/jumpers").json,
@@ -409,7 +461,7 @@ class LedgerAppTests(unittest.TestCase):
                     projectName="保存されない案件", equipment=json.dumps(equipment),
                     jumperChecks=json.dumps({"W1": True, "W2": True}),
                     removeFileIds=str(original["files"][0]["id"]),
-                    resultFiles=(io.BytesIO(b"replacement"), "replacement.txt"),
+                    resultFiles=(io.BytesIO(SAMPLE_RESULTS_CSV.encode("utf-8")), "replacement.csv"),
                 )
                 data.update(extra)
                 response = self.client.put(
@@ -453,7 +505,7 @@ class LedgerAppTests(unittest.TestCase):
                         projectName="保存されない案件", equipment=json.dumps(modified_equipment),
                         jumperChecks=json.dumps({"W1": True, "W2": True}),
                         removeFileIds=str(original["files"][0]["id"]),
-                        resultFiles=(io.BytesIO(b"replacement"), "replacement.txt"),
+                        resultFiles=(io.BytesIO(SAMPLE_RESULTS_CSV.encode("utf-8")), "replacement.csv"),
                     ),
                     headers={"X-CSRF-Token": self.csrf_token},
                 )
@@ -461,6 +513,59 @@ class LedgerAppTests(unittest.TestCase):
         self.assertEqual(self.client.get(f"/api/records/{record_id}/equipment").json, equipment)
         self.assertTrue(all(not jumper["confirmed"] for jumper in self.client.get(f"/api/records/{record_id}/jumpers").json))
         self.assertEqual(self.app.test_client().put(f"/api/records/{record_id}/details", data={}).status_code, 401)
+
+    def test_trial_results_csv_saved_and_preview_apis(self):
+        self.login()
+        record_id = self.client.post(
+            "/api/records", data=self.record_data(resultFiles=(io.BytesIO(SAMPLE_RESULTS_CSV.encode("cp932")), "results.CSV")),
+            headers={"X-CSRF-Token": self.csrf_token},
+        ).json["id"]
+        original = self.client.get("/api/records").json[0]
+        file_id = original["files"][0]["id"]
+        url = f"/api/records/{record_id}/files/{file_id}/results"
+        parsed = self.client.get(url)
+        self.assertEqual(parsed.status_code, 200)
+        self.assertEqual(parsed.json, parse_trial_results(SAMPLE_RESULTS_CSV.encode("utf-8")))
+        preview_url = f"/api/records/{record_id}/results-preview"
+        preview = self.client.post(
+            preview_url,
+            data={"resultFile": (io.BytesIO(SAMPLE_RESULTS_CSV.encode("utf-8-sig")), "preview.csv")},
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(preview.status_code, 200)
+        self.assertEqual(preview.json, parsed.json)
+        self.assertEqual(self.client.get("/api/records").json[0], original)
+        self.assertEqual(self.app.test_client().get(url).status_code, 401)
+        self.assertEqual(self.app.test_client().post(preview_url).status_code, 401)
+        self.assertEqual(self.client.post(preview_url).status_code, 400)
+        self.assertEqual(self.client.get(f"/api/records/{record_id + 1}/files/{file_id}/results").status_code, 404)
+        self.assertEqual(self.client.post("/api/records/999999/results-preview", headers={"X-CSRF-Token": self.csrf_token}).status_code, 404)
+        for filename, content in (("invalid.csv", b"not a trial CSV"), ("results.txt", SAMPLE_RESULTS_CSV.encode("utf-8"))):
+            response = self.client.post(
+                preview_url, data={"resultFile": (io.BytesIO(content), filename)},
+                headers={"X-CSRF-Token": self.csrf_token},
+            )
+            self.assertEqual(response.status_code, 400)
+
+    def test_trial_results_csv_rejected_without_partial_save(self):
+        self.login()
+        record_id = self.client.post("/api/records", data=self.record_data(), headers={"X-CSRF-Token": self.csrf_token}).json["id"]
+        original = self.client.get("/api/records").json[0]
+        equipment = self.client.get(f"/api/records/{record_id}/equipment").json
+        for filename, content in (("invalid.csv", b"invalid"), ("invalid.txt", SAMPLE_RESULTS_CSV.encode("utf-8"))):
+            response = self.client.put(
+                f"/api/records/{record_id}/details",
+                data=self.record_data(
+                    projectName="保存されない案件", equipment=json.dumps(equipment),
+                    jumperChecks=json.dumps({"W1": True, "W2": True}),
+                    resultFiles=(io.BytesIO(content), filename),
+                ),
+                headers={"X-CSRF-Token": self.csrf_token},
+            )
+            self.assertEqual(response.status_code, 400)
+            self.assertEqual(self.client.get("/api/records").json[0], original)
+            self.assertEqual(self.client.get(f"/api/records/{record_id}/equipment").json, equipment)
+            self.assertTrue(all(not jumper["confirmed"] for jumper in self.client.get(f"/api/records/{record_id}/jumpers").json))
 
     def test_rejects_record_write_without_csrf(self):
         self.login()

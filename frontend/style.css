@@ -1000,6 +1000,186 @@ tbody tr:last-child td {
   outline-offset: -2px;
 }
 
+.trial-results-panel {
+  margin-top: 28px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+
+.csv-heading,
+.csv-summary,
+.csv-pagination {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+}
+
+.csv-heading h2 {
+  margin: 0;
+  font-size: 1.15rem;
+}
+
+.csv-file-select {
+  max-width: 520px;
+  margin: 16px 0;
+}
+
+.trial-results-panel select {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--text);
+  font: inherit;
+}
+
+.csv-metadata {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
+  margin: 18px 0;
+}
+
+.csv-metadata dt {
+  font-size: 0.8rem;
+  color: #526a73;
+}
+
+.csv-metadata dd {
+  margin: 6px 0 0;
+  overflow-wrap: anywhere;
+  font-weight: 600;
+}
+
+.csv-section-tabs {
+  display: flex;
+  gap: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.csv-section-tabs button {
+  min-height: 44px;
+  padding: 10px 16px;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.csv-section-tabs button[aria-selected="true"] {
+  border-bottom-color: #26738c;
+  color: #195c72;
+}
+
+.csv-summary {
+  padding: 16px 0;
+  font-size: 0.9rem;
+}
+
+.csv-filters {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(120px, 180px);
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.csv-table-wrap {
+  max-height: 620px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: #fff;
+}
+
+.trial-results-table {
+  min-width: 1140px;
+  font-size: 0.8rem;
+}
+
+.trial-results-table.analog {
+  min-width: 1690px;
+}
+
+.csv-no-column { width: 120px; }
+.csv-name-column { width: 320px; }
+.csv-value-column { width: 90px; }
+.csv-judgement-column { width: 70px; }
+
+.trial-results-table th,
+.trial-results-table td {
+  padding: 9px 10px;
+  background: #fff;
+  font-variant-numeric: tabular-nums;
+}
+
+.trial-results-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  height: 38px;
+  background: #e5eff3;
+  color: #294b58;
+}
+
+.trial-results-table thead tr:nth-child(2) th {
+  top: 38px;
+}
+
+.trial-results-table tbody tr > :first-child,
+.trial-results-table thead tr:first-child > :first-child {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+}
+
+.trial-results-table thead tr:first-child > th:first-child {
+  z-index: 4;
+}
+
+.trial-results-table .csv-test-name {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.trial-results-table td:not(.csv-test-name) {
+  white-space: nowrap;
+}
+
+.trial-results-table .empty-row {
+  text-align: left;
+}
+
+.csv-judgement {
+  font-weight: 700;
+}
+
+.csv-judgement.pass { color: #21734c; }
+.csv-judgement.fail { color: #b02b37; }
+.csv-judgement.unjudged { color: #6b7280; }
+.trial-results-table .csv-failed-row > * { background: #fff0f1; }
+
+.csv-pagination {
+  margin-top: 14px;
+  font-size: 0.85rem;
+}
+
+.csv-pagination button {
+  min-height: 36px;
+  padding: 7px 12px;
+}
+
+.csv-pagination button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .record-detail-page {
   width: min(100%, 1100px);
   margin: 0 auto;

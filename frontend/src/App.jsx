@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import TrialResults from './TrialResults';
 
 // 添付ファイルの最大サイズは 100MB。
 // 画面遷移ごとの見出し文言と検索条件の初期値をまとめて管理する。
@@ -130,6 +131,7 @@ function App() {
   const [registrationValues, setRegistrationValues] = useState(emptyRegistrationValues);
   const [editingRecordId, setEditingRecordId] = useState(null);
   const [existingFiles, setExistingFiles] = useState([]);
+  const [previewFiles, setPreviewFiles] = useState([]);
   const [removedFileIds, setRemovedFileIds] = useState([]);
   const [registering, setRegistering] = useState(false);
   const [deletingRecordId, setDeletingRecordId] = useState(null);
@@ -317,6 +319,7 @@ function App() {
     setRegistrationValues(emptyRegistrationValues());
     setEditingRecordId(null);
     setExistingFiles([]);
+    setPreviewFiles([]);
     setRemovedFileIds([]);
     setRecordDirty(false);
     setDetailEquipment(null);
@@ -416,6 +419,10 @@ function App() {
     }
     const selectedFiles = formData.getAll('resultFiles')
       .filter((file) => file instanceof File && file.name);
+    if (selectedFiles.some((file) => !/\.csv$/i.test(file.name))) {
+      setRegisterMessage({ text: '試験結果ファイルはCSV形式（.csv）を選択してください。', type: 'error' });
+      return;
+    }
     if (selectedFiles.some((file) => file.size > MAX_FILE_SIZE)) {
       setRegisterMessage({ text: '添付ファイルは1件あたり100 MB以下にしてください。', type: 'error' });
       return;
@@ -497,6 +504,7 @@ function App() {
 
   function handleEditRecord(record) {
     registerForm.current?.reset();
+    setPreviewFiles([]);
     setDetailRecord(record);
     setRecordDirty(false);
     setEditingRecordId(record.id);
@@ -594,6 +602,7 @@ function App() {
       cancelRegister={cancelRegister}
       registerMessage={registerMessage}
       onChange={() => setRecordDirty(true)}
+      onFilesChange={setPreviewFiles}
     />
   );
 
@@ -614,6 +623,8 @@ function App() {
             onDirty={() => setRecordDirty(true)}
             cancelRegister={cancelRegister}
             registerMessage={registerMessage}
+            pendingFiles={previewFiles}
+            removedFileIds={removedFileIds}
             registering={registering}
             registrationForm={registrationForm}
             setAuthenticated={setAuthenticated}
@@ -862,7 +873,7 @@ function NewRecordDialog({ children, onClose, registering }) {
   );
 }
 
-function RegistrationForm({ registerForm, handleRegister, registrationValues, setRegistrationValues, editingRecordId, existingFiles, removedFileIds, setRemovedFileIds, registering, cancelRegister, registerMessage, onChange }) {
+function RegistrationForm({ registerForm, handleRegister, registrationValues, setRegistrationValues, editingRecordId, existingFiles, removedFileIds, setRemovedFileIds, registering, cancelRegister, registerMessage, onChange, onFilesChange }) {
   return (
     <form id={editingRecordId !== null ? 'record-edit-form' : undefined} ref={registerForm} className="form-panel" onSubmit={handleRegister} onChange={onChange}>
       <fieldset className="record-form-fields" disabled={registering}>
@@ -878,9 +889,9 @@ function RegistrationForm({ registerForm, handleRegister, registrationValues, se
           <label className="field"><span>担当者</span><input name="manager" type="text" maxLength="30" placeholder="例: 山田太郎" value={registrationValues.manager} onChange={(event) => setRegistrationValues((values) => ({ ...values, manager: event.target.value }))} required /></label>
           {editingRecordId !== null && (
             <label className="field file-field">
-              <span>試験結果</span>
-              <input name="resultFiles" type="file" multiple />
-              <small className="field-help">既存ファイルは維持されます。追加するファイルは1件100MB以下、合計100MBまでです。</small>
+              <span>試験結果CSV</span>
+              <input name="resultFiles" type="file" accept=".csv,text/csv" multiple onChange={(event) => onFilesChange(Array.from(event.target.files))} />
+              <small className="field-help">CSV形式。UTF-8またはShift_JIS。追加は1件100MB以下、合計100MBまでです。</small>
             </label>
           )}
         </div>
@@ -914,7 +925,7 @@ function RegistrationForm({ registerForm, handleRegister, registrationValues, se
   );
 }
 
-function RecordDetails({ record, onClose, recordDirty, registering, registrationForm, equipment, setEquipment, jumpers, setJumpers, onDirty, cancelRegister, registerMessage }) {
+function RecordDetails({ record, onClose, recordDirty, registering, registrationForm, equipment, setEquipment, jumpers, setJumpers, onDirty, cancelRegister, registerMessage, pendingFiles, removedFileIds, csrfToken, setAuthenticated, setLoginError }) {
 
   function closeDetails() {
     if (registering) return;
@@ -958,6 +969,15 @@ function RecordDetails({ record, onClose, recordDirty, registering, registration
         >{ '\u00d7' }</button>
       </header>
       {registrationForm}
+      <TrialResults
+        recordId={record.id}
+        files={(record.files || []).filter((file) => !removedFileIds.includes(file.id))}
+        pendingFiles={pendingFiles}
+        csrfToken={csrfToken}
+        request={apiRequest}
+        setAuthenticated={setAuthenticated}
+        setLoginError={setLoginError}
+      />
       <EquipmentForm equipment={equipment} setEquipment={setEquipment} disabled={registering} onDirty={onDirty} />
       <h3 className="jumper-heading">ジャンパ設定</h3>
       {jumpers ? (

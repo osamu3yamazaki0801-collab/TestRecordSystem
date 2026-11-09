@@ -1158,7 +1158,7 @@ tbody tr:last-child td {
 }
 
 .csv-table-wrap {
-  max-height: 620px;
+  max-height: none;
   overflow: auto;
   border: 1px solid var(--border);
   border-radius: 7px;

@@ -1,7 +1,5 @@
 import { useEffect, useState } from 'react';
 
-const PAGE_SIZE = 50;
-
 function Judgement({ value }) {
   const status = value.toUpperCase();
   return <span className={`csv-judgement ${status === 'PASS' ? 'pass' : status === 'FAIL' ? 'fail' : 'unjudged'}`}>{value || '-'}</span>;
@@ -14,7 +12,6 @@ export default function TrialResults({ recordId, files, pendingFiles, csrfToken,
   const [sectionIndex, setSectionIndex] = useState(0);
   const [search, setSearch] = useState('');
   const [judgement, setJudgement] = useState('');
-  const [pageNumber, setPageNumber] = useState(1);
   const sources = [
     ...pendingFiles.filter((file) => /\.csv$/i.test(file.name)).map((file, index) => ({ key: `pending:${index}`, file, pending: true, name: file.name })),
     ...files.filter((file) => /\.csv$/i.test(file.fileName)).map((file) => ({ key: `saved:${file.id}`, file, pending: false, name: file.fileName })),
@@ -51,7 +48,6 @@ export default function TrialResults({ recordId, files, pendingFiles, csrfToken,
       if (controller.signal.aborted) return;
       setParsed({ key: sourceKey, data: result });
       setSectionIndex(0);
-      setPageNumber(1);
     }).catch((failure) => {
       if (controller.signal.aborted) return;
       setError(failure.message);
@@ -70,9 +66,6 @@ export default function TrialResults({ recordId, files, pendingFiles, csrfToken,
     (!search || `${row.no} ${row.name}`.toLocaleLowerCase().includes(search.toLocaleLowerCase()))
     && (!judgement || row.judgement === judgement)
   )) || [];
-  const pageCount = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
-  const currentPage = Math.min(pageNumber, pageCount);
-  const visibleRows = rows.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
   const analog = section?.number === 1;
   const baseColumns = analog ? 5 : 4;
   const temperatureWidth = analog ? 4 : 2;
@@ -112,14 +105,13 @@ export default function TrialResults({ recordId, files, pendingFiles, csrfToken,
                 id={`csv-tab-${item.number}`}
                 aria-controls={`csv-panel-${item.number}`}
                 tabIndex={sectionIndex === index ? 0 : -1}
-                onClick={() => { setSectionIndex(index); setPageNumber(1); }}
+                onClick={() => setSectionIndex(index)}
                 onKeyDown={(event) => {
                   if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
                   event.preventDefault();
                   const next = event.key === 'Home' ? 0 : event.key === 'End' ? data.sections.length - 1
                     : (index + (event.key === 'ArrowRight' ? 1 : -1) + data.sections.length) % data.sections.length;
                   setSectionIndex(next);
-                  setPageNumber(1);
                   event.currentTarget.parentElement.children[next].focus();
                 }}
               >{item.title}</button>
@@ -133,8 +125,8 @@ export default function TrialResults({ recordId, files, pendingFiles, csrfToken,
               <span className="csv-judgement unjudged">未判定 {section.summary.UNJUDGED}</span>
             </div>
             <div className="csv-filters">
-              <label className="field"><span>試験項目を検索</span><input type="search" value={search} onChange={(event) => { setSearch(event.target.value); setPageNumber(1); }} /></label>
-              <label className="field"><span>判定</span><select value={judgement} onChange={(event) => { setJudgement(event.target.value); setPageNumber(1); }}><option value="">すべて</option><option value="FAIL">FAIL</option><option value="UNJUDGED">未判定</option><option value="PASS">PASS</option></select></label>
+              <label className="field"><span>試験項目を検索</span><input type="search" value={search} onChange={(event) => setSearch(event.target.value)} /></label>
+              <label className="field"><span>判定</span><select value={judgement} onChange={(event) => setJudgement(event.target.value)}><option value="">すべて</option><option value="FAIL">FAIL</option><option value="UNJUDGED">未判定</option><option value="PASS">PASS</option></select></label>
             </div>
             <div className="csv-table-wrap" tabIndex={0} aria-label={`${section.title}の測定結果`}>
               <table className={`trial-results-table${analog ? ' analog' : ''}`} aria-label={section.title}>
@@ -155,7 +147,7 @@ export default function TrialResults({ recordId, files, pendingFiles, csrfToken,
                     : ['測定値', '判定'].map((label, column) => <th key={`${index}-${column}`} scope="col">{label}</th>))}</tr>
                 </thead>
                 <tbody>
-                  {visibleRows.map((row, index) => (
+                  {rows.map((row, index) => (
                     <tr key={`${row.no}-${index}`} className={row.judgement === 'FAIL' ? 'csv-failed-row' : ''}>
                       <th scope="row">{row.no}</th><td className="csv-test-name">{row.name}</td>
                       {analog ? <><td>{row.lowerLimit || '-'}</td><td>{row.upperLimit || '-'}</td></> : <td>{row.specifiedValue || '-'}</td>}
@@ -168,12 +160,6 @@ export default function TrialResults({ recordId, files, pendingFiles, csrfToken,
                   {!rows.length && <tr><td colSpan={baseColumns + temperatureWidth * 3} className="empty-row">該当する試験項目はありません。</td></tr>}
                 </tbody>
               </table>
-            </div>
-            <div className="csv-pagination">
-              <span>{rows.length ? `${(currentPage - 1) * PAGE_SIZE + 1}～${Math.min(currentPage * PAGE_SIZE, rows.length)}` : '0'} / {rows.length}項目</span>
-              <button type="button" className="secondary-button" disabled={currentPage === 1} onClick={() => setPageNumber(currentPage - 1)}>前へ</button>
-              <span>{currentPage} / {pageCount}</span>
-              <button type="button" className="secondary-button" disabled={currentPage === pageCount} onClick={() => setPageNumber(currentPage + 1)}>次へ</button>
             </div>
           </div>
         </>

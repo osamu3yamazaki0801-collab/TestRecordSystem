@@ -627,16 +627,13 @@ class LedgerAppTests(unittest.TestCase):
             404,
         )
 
-    def test_update_record_changes_fields_and_manages_attachments(self):
+    def test_update_record_changes_fields_and_replaces_attachment(self):
         self.login()
         created = self.client.post(
             "/api/records",
             data={
                 **self.record_data(),
-                "resultFiles": [
-                    (io.BytesIO(b"first content"), "first.txt"),
-                    (io.BytesIO(b"kept content"), "kept.txt"),
-                ],
+                "resultFiles": (io.BytesIO(b"original content"), "original.txt"),
             },
             headers={"X-CSRF-Token": self.csrf_token},
         )
@@ -670,13 +667,41 @@ class LedgerAppTests(unittest.TestCase):
         self.assertEqual(record["manager"], "佐藤花子")
         self.assertEqual(
             [file["fileName"] for file in record["files"]],
-            ["kept.txt", "new.txt"],
+            ["new.txt"],
         )
         self.assertEqual(
             self.client.get(
                 f"/api/records/{record_id}/files/{record['files'][0]['id']}"
             ).data,
-            b"kept content",
+            b"new content",
+        )
+
+    def test_update_rejects_adding_an_attachment_without_removing_existing_file(self):
+        self.login()
+        created = self.client.post(
+            "/api/records",
+            data={
+                **self.record_data(),
+                "resultFile": (io.BytesIO(b"original"), "original.txt"),
+            },
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(created.status_code, 201)
+
+        response = self.client.put(
+            f"/api/records/{created.json['id']}",
+            data={
+                **self.record_data(),
+                "resultFiles": (io.BytesIO(b"new"), "new.txt"),
+            },
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("1件", response.json["error"])
+        self.assertEqual(
+            [file["fileName"] for file in self.client.get("/api/records").json[0]["files"]],
+            ["original.txt"],
         )
 
     def test_invalid_record_update_leaves_record_and_files_unchanged(self):
@@ -851,7 +876,7 @@ class LedgerAppTests(unittest.TestCase):
             401,
         )
 
-    def test_registers_and_downloads_multiple_files(self):
+    def test_rejects_registering_multiple_files(self):
         self.login()
         response = self.client.post(
             "/api/records",
@@ -864,29 +889,9 @@ class LedgerAppTests(unittest.TestCase):
             },
             headers={"X-CSRF-Token": self.csrf_token},
         )
-        self.assertEqual(response.status_code, 201)
-        record_id = response.json["id"]
-        record = self.client.get("/api/records").json[0]
-        self.assertEqual(
-            [item["fileName"] for item in record["files"]],
-            ["first.txt", "second.txt"],
-        )
-        self.assertEqual(
-            self.client.get(
-                f"/api/records/{record_id}/files/{record['files'][0]['id']}"
-            ).data,
-            b"first result",
-        )
-        self.assertEqual(
-            self.client.get(
-                f"/api/records/{record_id}/files/{record['files'][1]['id']}"
-            ).data,
-            b"second result",
-        )
-        self.assertEqual(
-            self.client.get(f"/api/records/{record_id}/file").data,
-            b"first result",
-        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("1件", response.json["error"])
+        self.assertEqual(self.client.get("/api/records").json, [])
 
     def test_rejects_attachments_over_the_combined_size_limit(self):
         self.login()
@@ -896,8 +901,7 @@ class LedgerAppTests(unittest.TestCase):
                 data={
                     **self.record_data(),
                     "resultFiles": [
-                        (io.BytesIO(b"123"), "first.txt"),
-                        (io.BytesIO(b"456"), "second.txt"),
+                        (io.BytesIO(b"123456"), "single.txt"),
                     ],
                 },
                 headers={"X-CSRF-Token": self.csrf_token},

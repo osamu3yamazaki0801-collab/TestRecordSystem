@@ -112,20 +112,23 @@ button {
   border: 0;
 }
 
-.existing-files {
+.result-file-registration {
+  margin: 20px 0;
+}
+
+.result-file-registration h2 {
+  margin: 0 0 12px;
+  font-size: 1.05rem;
+}
+
+.result-file-actions {
   display: grid;
-  gap: 10px;
-  padding: 14px;
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  background: #fffefa;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 0.9fr);
+  align-items: start;
+  gap: 16px;
 }
 
-.existing-files > strong {
-  font-size: 0.9rem;
-}
-
-.existing-files ul {
+.result-file-list {
   display: grid;
   gap: 8px;
   margin: 0;
@@ -133,7 +136,7 @@ button {
   list-style: none;
 }
 
-.existing-files li {
+.result-file-list li {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -141,13 +144,25 @@ button {
   gap: 8px;
 }
 
-.remove-file {
-  display: inline-flex;
+.result-file-list .file-link {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.result-file-empty {
+  min-height: 44px;
+  display: flex;
   align-items: center;
-  gap: 6px;
-  color: var(--danger);
-  font-size: 0.8rem;
-  font-weight: 600;
+  margin: 0;
+  color: var(--muted);
+}
+
+.result-file-picker {
+  min-width: 0;
+}
+
+.result-file-picker input[type="file"] {
+  min-width: 0;
 }
 
 .field input {
@@ -244,6 +259,10 @@ button {
 }
 
 .delete-button:hover:not(:disabled) {
+  background: #fbefec;
+}
+
+.delete-button[aria-pressed="true"] {
   background: #fbefec;
 }
 
@@ -1078,6 +1097,43 @@ tbody tr:last-child td {
   color: #195c72;
 }
 
+.record-detail-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.record-detail-tabs button {
+  min-height: 44px;
+  max-width: 100%;
+  padding: 10px 16px;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.record-detail-tabs button[aria-selected="true"] {
+  border-bottom-color: #26738c;
+  color: #195c72;
+}
+
+.record-detail-tabs button:focus-visible {
+  outline: 2px solid #195f7c;
+  outline-offset: -2px;
+}
+
+[role="tabpanel"][hidden] {
+  display: none;
+}
+
 .csv-summary {
   padding: 16px 0;
   font-size: 0.9rem;
@@ -1188,6 +1244,19 @@ tbody tr:last-child td {
 
 .record-detail-content {
   min-width: 0;
+}
+
+.record-detail-common {
+  margin-bottom: 20px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-left: 4px solid #195f7c;
+  border-radius: 6px;
+  background: var(--panel-alt);
+}
+
+.record-detail-common > .button-row {
+  justify-content: flex-end;
 }
 
 .detail-trial-no {
@@ -1475,6 +1544,10 @@ tbody tr:last-child td {
 }
 
 @media (max-width: 760px) {
+  .result-file-actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .app-shell.active {
     display: flex;
     flex-direction: column;

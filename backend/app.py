@@ -272,11 +272,13 @@ def create_app(test_config=None):
                 ("登録日は実在する日付をyyyymmdd形式で入力してください。", 400),
             )
 
+        uploads = [upload for upload in uploads if upload and upload.filename]
+        if len(uploads) > 1:
+            return None, None, None, ("試験結果ファイルは1件だけ登録できます。", 400)
+
         files = []
         total_file_size = 0
         for upload in uploads:
-            if not upload or not upload.filename:
-                continue
             file_data = upload.read(MAX_FILE_SIZE + 1)
             if len(file_data) > MAX_FILE_SIZE:
                 return (
@@ -668,7 +670,7 @@ def create_app(test_config=None):
             if not record:
                 abort(404)
 
-            if remove_file_ids:
+            if remove_file_ids or files:
                 existing_file_ids = {
                     row["id"]
                     for row in connection.execute(
@@ -676,8 +678,11 @@ def create_app(test_config=None):
                         (record_id,),
                     ).fetchall()
                 }
-                if not set(remove_file_ids).issubset(existing_file_ids):
+                if remove_file_ids and not set(remove_file_ids).issubset(existing_file_ids):
                     return jsonify(error="削除対象の添付ファイルが見つかりません。"), 400
+                remaining_file_count = len(existing_file_ids - set(remove_file_ids))
+                if remaining_file_count + len(files) > 1:
+                    return jsonify(error="試験結果ファイルは1件だけ登録できます。"), 400
 
             connection.execute(
                 """

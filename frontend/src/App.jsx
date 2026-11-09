@@ -419,6 +419,10 @@ function App() {
     }
     const selectedFiles = formData.getAll('resultFiles')
       .filter((file) => file instanceof File && file.name);
+    if (selectedFiles.length > 1) {
+      setRegisterMessage({ text: '試験結果ファイルは1件だけ登録できます。', type: 'error' });
+      return;
+    }
     if (selectedFiles.some((file) => !/\.csv$/i.test(file.name))) {
       setRegisterMessage({ text: '試験結果ファイルはCSV形式（.csv）を選択してください。', type: 'error' });
       return;
@@ -595,14 +599,10 @@ function App() {
       registrationValues={registrationValues}
       setRegistrationValues={setRegistrationValues}
       editingRecordId={editingRecordId}
-      existingFiles={existingFiles}
-      removedFileIds={removedFileIds}
-      setRemovedFileIds={setRemovedFileIds}
       registering={registering}
       cancelRegister={cancelRegister}
       registerMessage={registerMessage}
       onChange={() => setRecordDirty(true)}
-      onFilesChange={setPreviewFiles}
     />
   );
 
@@ -627,6 +627,9 @@ function App() {
             removedFileIds={removedFileIds}
             registering={registering}
             registrationForm={registrationForm}
+            existingFiles={existingFiles}
+            setRemovedFileIds={setRemovedFileIds}
+            onFilesChange={setPreviewFiles}
             setAuthenticated={setAuthenticated}
             setLoginError={setLoginError}
           />
@@ -873,7 +876,7 @@ function NewRecordDialog({ children, onClose, registering }) {
   );
 }
 
-function RegistrationForm({ registerForm, handleRegister, registrationValues, setRegistrationValues, editingRecordId, existingFiles, removedFileIds, setRemovedFileIds, registering, cancelRegister, registerMessage, onChange, onFilesChange }) {
+function RegistrationForm({ registerForm, handleRegister, registrationValues, setRegistrationValues, editingRecordId, registering, cancelRegister, registerMessage, onChange }) {
   return (
     <form id={editingRecordId !== null ? 'record-edit-form' : undefined} ref={registerForm} className="form-panel" onSubmit={handleRegister} onChange={onChange}>
       <fieldset className="record-form-fields" disabled={registering}>
@@ -887,32 +890,7 @@ function RegistrationForm({ registerForm, handleRegister, registrationValues, se
             </>
           )}
           <label className="field"><span>担当者</span><input name="manager" type="text" maxLength="30" placeholder="例: 山田太郎" value={registrationValues.manager} onChange={(event) => setRegistrationValues((values) => ({ ...values, manager: event.target.value }))} required /></label>
-          {editingRecordId !== null && (
-            <label className="field file-field">
-              <span>試験結果CSV</span>
-              <input name="resultFiles" type="file" accept=".csv,text/csv" multiple onChange={(event) => onFilesChange(Array.from(event.target.files))} />
-              <small className="field-help">CSV形式。UTF-8またはShift_JIS。追加は1件100MB以下、合計100MBまでです。</small>
-            </label>
-          )}
         </div>
-        {editingRecordId !== null && (
-          <div className="existing-files">
-            <strong>現在の添付ファイル</strong>
-            {existingFiles.length ? (
-              <ul>{existingFiles.map((file) => (
-                <li key={file.id}>
-                  <a className="file-link" href={`/api/records/${encodeURIComponent(editingRecordId)}/files/${encodeURIComponent(file.id)}`}>{file.fileName}</a>
-                  <label className="remove-file">
-                    <input type="checkbox" checked={removedFileIds.includes(file.id)} onChange={(event) => {
-                      setRemovedFileIds((current) => event.target.checked ? [...current, file.id] : current.filter((id) => id !== file.id));
-                    }} />
-                    削除する
-                  </label>
-                </li>
-              ))}</ul>
-            ) : <p className="field-help">添付ファイルはありません。</p>}
-          </div>
-        )}
         {editingRecordId === null && (
           <div className="button-row">
             <button type="submit" className="primary-button" disabled={registering}>{registering ? '処理中...' : '登録'}</button>
@@ -925,7 +903,13 @@ function RegistrationForm({ registerForm, handleRegister, registrationValues, se
   );
 }
 
-function RecordDetails({ record, onClose, recordDirty, registering, registrationForm, equipment, setEquipment, jumpers, setJumpers, onDirty, cancelRegister, registerMessage, pendingFiles, removedFileIds, csrfToken, setAuthenticated, setLoginError }) {
+function RecordDetails({ record, onClose, recordDirty, registering, registrationForm, equipment, setEquipment, jumpers, setJumpers, onDirty, cancelRegister, registerMessage, pendingFiles, removedFileIds, existingFiles, setRemovedFileIds, onFilesChange, csrfToken, setAuthenticated, setLoginError }) {
+  const [activeTab, setActiveTab] = useState(0);
+  const detailTabs = [
+    '試験情報',
+    '外観チェック',
+    '試験結果',
+  ];
 
   function closeDetails() {
     if (registering) return;
@@ -968,56 +952,141 @@ function RecordDetails({ record, onClose, recordDirty, registering, registration
           onClick={closeDetails}
         >{ '\u00d7' }</button>
       </header>
-      {registrationForm}
-      <TrialResults
-        recordId={record.id}
-        files={(record.files || []).filter((file) => !removedFileIds.includes(file.id))}
-        pendingFiles={pendingFiles}
-        csrfToken={csrfToken}
-        request={apiRequest}
-        setAuthenticated={setAuthenticated}
-        setLoginError={setLoginError}
-      />
-      <EquipmentForm equipment={equipment} setEquipment={setEquipment} disabled={registering} onDirty={onDirty} />
-      <h3 className="jumper-heading">ジャンパ設定</h3>
-      {jumpers ? (
-        <div className="equipment-table-wrap jumper-table-wrap">
-          <table className="jumper-table equipment-table" aria-label="ジャンパ設定の確認" aria-busy={registering}>
-            <thead><tr><th scope="col">ジャンパ名</th><th scope="col">設定</th><th scope="col">確認結果</th></tr></thead>
-            <tbody>
-              {jumpers.map((jumper) => (
-                <tr key={jumper.name}>
-                  <td>{jumper.name}</td>
-                  <td>{jumper.setting}</td>
-                  <td>
-                    <label className="jumper-check" title={`${jumper.name}：${jumper.confirmed ? '確認済み' : '未確認'}`}>
-                      <input
-                        type="checkbox"
-                        aria-label={`${jumper.name}の設定を確認`}
-                        checked={jumper.confirmed}
-                        disabled={registering}
-                        onChange={() => {
-                          setJumpers((current) => current.map((item) => item.name === jumper.name ? { ...item, confirmed: !item.confirmed } : item));
-                          onDirty();
-                        }}
-                      />
-                      <span aria-hidden="true">{jumper.confirmed ? '\u2705' : '\u25a1'}</span>
-                    </label>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      <div className="record-detail-common">
+        {registrationForm}
+        <div className="button-row">
+          {recordDirty && <span className="status-text warning">未保存</span>}
+          <button type="submit" form="record-edit-form" className="primary-button" disabled={registering || !equipment || !jumpers}>
+            {registering ? '保存中...' : '変更を保存'}
+          </button>
+          <button type="button" className="secondary-button" disabled={registering} onClick={cancelRegister}>変更をキャンセル</button>
         </div>
-      ) : <Message>読み込み中...</Message>}
-      <div className="button-row">
-        <button type="submit" form="record-edit-form" className="primary-button" disabled={registering || !equipment || !jumpers}>
-          {registering ? '保存中...' : '変更を保存'}
-        </button>
-        <button type="button" className="secondary-button" disabled={registering} onClick={cancelRegister}>変更をキャンセル</button>
-        {recordDirty && <span className="status-text warning">未保存</span>}
+        {registerMessage.text && <Message type={registerMessage.type}>{registerMessage.text}</Message>}
       </div>
-      {registerMessage.text && <Message type={registerMessage.type}>{registerMessage.text}</Message>}
+      <div className="record-detail-tabs" role="tablist" aria-label="記録詳細">
+        {detailTabs.map((title, index) => (
+          <button
+            key={title}
+            type="button"
+            role="tab"
+            id={`record-detail-tab-${index}`}
+            aria-controls={`record-detail-panel-${index}`}
+            aria-selected={activeTab === index}
+            tabIndex={activeTab === index ? 0 : -1}
+            onClick={() => setActiveTab(index)}
+            onKeyDown={(event) => {
+              if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+              event.preventDefault();
+              const next = event.key === 'Home' ? 0 : event.key === 'End' ? detailTabs.length - 1
+                : (index + (event.key === 'ArrowRight' ? 1 : -1) + detailTabs.length) % detailTabs.length;
+              setActiveTab(next);
+              event.currentTarget.parentElement.children[next].focus();
+            }}
+          >{title}</button>
+        ))}
+      </div>
+      {detailTabs.map((_, index) => (
+        <div
+          key={index}
+          role="tabpanel"
+          id={`record-detail-panel-${index}`}
+          aria-labelledby={`record-detail-tab-${index}`}
+          hidden={activeTab !== index}
+        >
+          {index === 0 && <EquipmentForm equipment={equipment} setEquipment={setEquipment} disabled={registering} onDirty={onDirty} groupKeys={['boards', 'instruments']} />}
+          {index === 1 && (
+            <>
+              <EquipmentForm equipment={equipment} setEquipment={setEquipment} disabled={registering} onDirty={onDirty} groupKeys={['software']} />
+              <h3 className="jumper-heading">ジャンパ設定</h3>
+              {jumpers ? (
+                <div className="equipment-table-wrap jumper-table-wrap">
+                  <table className="jumper-table equipment-table" aria-label="ジャンパ設定の確認" aria-busy={registering}>
+                    <thead><tr><th scope="col">ジャンパ名</th><th scope="col">設定</th><th scope="col">確認結果</th></tr></thead>
+                    <tbody>
+                      {jumpers.map((jumper) => (
+                        <tr key={jumper.name}>
+                          <td>{jumper.name}</td>
+                          <td>{jumper.setting}</td>
+                          <td>
+                            <label className="jumper-check" title={`${jumper.name}：${jumper.confirmed ? '確認済み' : '未確認'}`}>
+                              <input
+                                type="checkbox"
+                                aria-label={`${jumper.name}の設定を確認`}
+                                checked={jumper.confirmed}
+                                disabled={registering}
+                                onChange={() => {
+                                  setJumpers((current) => current.map((item) => item.name === jumper.name ? { ...item, confirmed: !item.confirmed } : item));
+                                  onDirty();
+                                }}
+                              />
+                              <span aria-hidden="true">{jumper.confirmed ? '\u2705' : '\u25a1'}</span>
+                            </label>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : <Message>読み込み中...</Message>}
+            </>
+          )}
+          {index === 2 && (
+            <>
+              <div className="result-file-registration">
+                <h2>試験結果CSVを登録</h2>
+                <div className="result-file-actions">
+                  {existingFiles.length ? (
+                    <ul className="result-file-list">{existingFiles.map((file) => {
+                      const markedForRemoval = removedFileIds.includes(file.id);
+                      return (
+                        <li key={file.id}>
+                          <a className="file-link" href={`/api/records/${encodeURIComponent(record.id)}/files/${encodeURIComponent(file.id)}`}>{file.fileName}</a>
+                          <button
+                            type="button"
+                            className="delete-button"
+                            aria-pressed={markedForRemoval}
+                            disabled={registering}
+                            onClick={() => {
+                              setRemovedFileIds((current) => markedForRemoval
+                                ? current.filter((id) => id !== file.id)
+                                : [...current, file.id]);
+                              onDirty();
+                            }}
+                          >{markedForRemoval ? '削除を取り消す' : '削除する'}</button>
+                        </li>
+                      );
+                    })}</ul>
+                  ) : <p className="result-file-empty">ファイルが選択されていません</p>}
+                  <label className="field file-field result-file-picker">
+                    <span>試験結果ファイル</span>
+                    <input
+                      form="record-edit-form"
+                      name="resultFiles"
+                      type="file"
+                      accept=".csv,text/csv"
+                      disabled={registering || existingFiles.some((file) => !removedFileIds.includes(file.id))}
+                      onChange={(event) => {
+                        onFilesChange(Array.from(event.target.files));
+                        onDirty();
+                      }}
+                    />
+                    <small className="field-help">自動試験システムの試験結果CSVをインポートしてください。</small>
+                  </label>
+                </div>
+              </div>
+              <TrialResults
+                recordId={record.id}
+                files={(record.files || []).filter((file) => !removedFileIds.includes(file.id))}
+                pendingFiles={pendingFiles}
+                csrfToken={csrfToken}
+                request={apiRequest}
+                setAuthenticated={setAuthenticated}
+                setLoginError={setLoginError}
+              />
+            </>
+          )}
+        </div>
+      ))}
     </section>
   );
 }
@@ -1049,7 +1118,7 @@ const EQUIPMENT_SECTIONS = [
   },
 ];
 
-function EquipmentForm({ equipment, setEquipment, disabled, onDirty }) {
+function EquipmentForm({ equipment, setEquipment, disabled, onDirty, groupKeys }) {
   function changeField(group, rowIndex, field, value) {
     setEquipment((current) => ({
       ...current,
@@ -1065,7 +1134,7 @@ function EquipmentForm({ equipment, setEquipment, disabled, onDirty }) {
   return (
     <div className="equipment-form" aria-busy={disabled}>
       <fieldset disabled={disabled}>
-        {EQUIPMENT_SECTIONS.map((group) => (
+        {EQUIPMENT_SECTIONS.filter((group) => groupKeys.includes(group.key)).map((group) => (
           <section key={group.key} aria-labelledby={`equipment-${group.key}-heading`}>
             <h3 id={`equipment-${group.key}-heading`} className="jumper-heading">{group.title}</h3>
             <div className="equipment-table-wrap">

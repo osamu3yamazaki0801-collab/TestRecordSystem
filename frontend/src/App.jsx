@@ -16,6 +16,7 @@ const SECTION_DETAILS = {
 };
 const EMPTY_FILTERS = {
   trialNo: '',
+  projectName: '',
   productNo: '',
   date: '',
   manager: '',
@@ -635,6 +636,7 @@ function App() {
             <div className="search-panel">
               <div className="search-grid">
                 <SearchField label="試験番号" name="trialNo" value={searchFilters.trialNo} onChange={setSearchFilters} placeholder="試験番号" maxLength={20} />
+                <SearchField label="案件名" name="projectName" value={searchFilters.projectName} onChange={setSearchFilters} placeholder="案件名" maxLength={30} />
                 <SearchField label="製番" name="productNo" value={searchFilters.productNo} onChange={setSearchFilters} placeholder="製番" maxLength={30} />
                 <SearchField label="登録日" name="date" value={searchFilters.date} onChange={setSearchFilters} placeholder="yyyymmdd" maxLength={8} />
                 <SearchField label="担当者" name="manager" value={searchFilters.manager} onChange={setSearchFilters} placeholder="担当者" maxLength={30} />

@@ -415,12 +415,14 @@ def create_app(test_config=None):
         if request.method == "GET":
             filters = {
                 "trial_no": request.args.get("trialNo", ""),
+                "project_name": request.args.get("projectName", ""),
                 "product_no": request.args.get("productNo", ""),
                 "registration_date": request.args.get("date", ""),
                 "manager": request.args.get("manager", ""),
             }
             max_filter_lengths = {
                 "trial_no": 20,
+                "project_name": 30,
                 "product_no": 30,
                 "registration_date": 8,
                 "manager": 30,

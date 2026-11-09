@@ -118,6 +118,43 @@ class LedgerAppTests(unittest.TestCase):
         self.assertEqual(login_response.status_code, 200)
         self.assertEqual(len(second_client.get("/api/records").json), 1)
 
+    def test_search_by_project_name(self):
+        self.login()
+        for trial_no, project_name in (
+            ("T-001", "制御試験案件"),
+            ("T-002", "制御確認案件"),
+            ("T-003", "Project-Alpha"),
+            ("T-004", ""),
+        ):
+            response = self.client.post(
+                "/api/records",
+                data=self.record_data(trialNo=trial_no, projectName=project_name),
+                headers={"X-CSRF-Token": self.csrf_token},
+            )
+            self.assertEqual(response.status_code, 201)
+        for filters, expected_trial_nos in (
+            ({"projectName": "制御"}, ["T-002", "T-001"]),
+            ({"projectName": "制御*試験"}, ["T-001"]),
+            ({"projectName": "project-alpha"}, ["T-003"]),
+            ({"projectName": "制御", "trialNo": "T-002"}, ["T-002"]),
+            ({"projectName": "制御", "productNo": "NO-MATCH"}, []),
+            ({"projectName": "不存在"}, []),
+            ({"projectName": " "}, ["T-004", "T-003", "T-002", "T-001"]),
+        ):
+            with self.subTest(filters=filters):
+                response = self.client.get("/api/records", query_string=filters)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(
+                    [record["trialNo"] for record in response.json], expected_trial_nos,
+                )
+        self.assertEqual(
+            self.client.get("/api/records", query_string={"projectName": "案" * 30}).status_code,
+            200,
+        )
+        response = self.client.get("/api/records", query_string={"projectName": "案" * 31})
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json["error"], "検索条件が長すぎます。")
+
     def test_minimal_registration_and_later_details_update(self):
         self.login()
         response = self.client.post(

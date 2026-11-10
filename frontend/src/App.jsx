@@ -926,7 +926,7 @@ function RecordDetails({ record, onClose, recordDirty, registering, registration
   const dividerDrag = useRef(null);
   const detailTabs = [
     '試験情報',
-    '外観チェック',
+    '試験前チェック',
     '試験結果',
   ];
 
@@ -1206,7 +1206,16 @@ const EQUIPMENT_SECTIONS = [
     ],
   },
   {
-    key: 'software', title: 'インストールソフト・PLDバージョン',
+    key: 'software', sectionId: 'software', title: 'インストールソフト', rowIndexes: [0],
+    columns: [
+      { key: 'name', label: 'ソフト', fixed: true },
+      { key: 'sdFormat', label: 'SD 形式', fixed: true },
+      { key: 'version', label: 'バージョン' },
+      { key: 'checksum', label: 'チェックサム' },
+    ],
+  },
+  {
+    key: 'software', sectionId: 'pld-version', title: 'PLDバージョン', rowIndexes: [1, 2],
     columns: [
       { key: 'name', label: 'ソフト', fixed: true },
       { key: 'sdFormat', label: 'SD 形式', fixed: true },
@@ -1249,53 +1258,56 @@ function EquipmentForm({ equipment, instrumentChoices = [], setEquipment, disabl
           </datalist>
         )}
         {EQUIPMENT_SECTIONS.filter((group) => groupKeys.includes(group.key)).map((group) => (
-          <section key={group.key} aria-labelledby={`equipment-${group.key}-heading`}>
-            <h3 id={`equipment-${group.key}-heading`} className="jumper-heading">{group.title}</h3>
+          <section key={group.sectionId || group.key} aria-labelledby={`equipment-${group.sectionId || group.key}-heading`}>
+            <h3 id={`equipment-${group.sectionId || group.key}-heading`} className="jumper-heading">{group.title}</h3>
             <div className="equipment-table-wrap">
               <table className={`equipment-table equipment-table--${group.key}`} aria-label={group.title}>
                 <thead><tr>{group.columns.map((column) => <th key={column.key} scope="col">{column.label}</th>)}</tr></thead>
                 <tbody>
-                  {equipment[group.key].map((row, rowIndex) => (
-                    <tr key={rowIndex}>
-                      {group.columns.map((column) => (
-                        <td key={column.key}>
-                          {column.fixed ? row[column.key] : group.key === 'instruments' && column.key === 'name' ? (
-                            <input
-                              type="text"
-                              list="instrument-name-options"
-                              aria-label={`使用計測器 ${rowIndex + 1}行目 計測器`}
-                              value={row.name}
-                              maxLength={100}
-                              onChange={(event) => changeInstrument(rowIndex, event.target.value)}
-                            />
-                          ) : group.key === 'boards' && ['revision', 'nega'].includes(column.key) ? (
-                            <input
-                              className="equipment-short-input"
-                              type="text"
-                              aria-label={`${row.name} ${column.label}`}
-                              value={row[column.key]}
-                              maxLength={5}
-                              pattern="[A-Za-z0-9]{0,5}"
-                              onChange={(event) => {
-                                const { value } = event.target;
-                                if (/^[A-Za-z0-9]{0,5}$/.test(value)) {
-                                  changeField(group.key, rowIndex, column.key, value);
-                                }
-                              }}
-                            />
-                          ) : (
-                            <input
-                              type="text"
-                              aria-label={`${group.key === 'instruments' ? `使用計測器 ${rowIndex + 1}行目` : row.name} ${column.label}`}
-                              value={row[column.key]}
-                              maxLength={100}
-                              onChange={(event) => changeField(group.key, rowIndex, column.key, event.target.value)}
-                            />
-                          )}
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
+                  {(group.rowIndexes || equipment[group.key].map((_, index) => index)).map((rowIndex) => {
+                    const row = equipment[group.key][rowIndex];
+                    return (
+                      <tr key={rowIndex}>
+                        {group.columns.map((column) => (
+                          <td key={column.key}>
+                            {column.fixed ? row[column.key] : group.key === 'instruments' && column.key === 'name' ? (
+                              <input
+                                type="text"
+                                list="instrument-name-options"
+                                aria-label={`使用計測器 ${rowIndex + 1}行目 計測器`}
+                                value={row.name}
+                                maxLength={100}
+                                onChange={(event) => changeInstrument(rowIndex, event.target.value)}
+                              />
+                            ) : group.key === 'boards' && ['revision', 'nega'].includes(column.key) ? (
+                              <input
+                                className="equipment-short-input"
+                                type="text"
+                                aria-label={`${row.name} ${column.label}`}
+                                value={row[column.key]}
+                                maxLength={5}
+                                pattern="[A-Za-z0-9]{0,5}"
+                                onChange={(event) => {
+                                  const { value } = event.target;
+                                  if (/^[A-Za-z0-9]{0,5}$/.test(value)) {
+                                    changeField(group.key, rowIndex, column.key, value);
+                                  }
+                                }}
+                              />
+                            ) : (
+                              <input
+                                type="text"
+                                aria-label={`${group.key === 'instruments' ? `使用計測器 ${rowIndex + 1}行目` : row.name} ${column.label}`}
+                                value={row[column.key]}
+                                maxLength={100}
+                                onChange={(event) => changeField(group.key, rowIndex, column.key, event.target.value)}
+                              />
+                            )}
+                          </td>
+                        ))}
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

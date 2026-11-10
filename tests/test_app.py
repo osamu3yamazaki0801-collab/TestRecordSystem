@@ -343,6 +343,7 @@ class LedgerAppTests(unittest.TestCase):
             "MDM91-D0", "INF271-B0", "INF267-A1",
         ])
         self.assertTrue(all(row["serialNumber"] == "" for row in equipment["boards"]))
+        self.assertTrue(all(row["revision"] == "" and row["nega"] == "" for row in equipment["boards"]))
         self.assertEqual(equipment["instruments"], [
             {"name": "", "managementNo": "", "testItems": ""} for _ in range(5)
         ])
@@ -381,6 +382,10 @@ class LedgerAppTests(unittest.TestCase):
             {"name": "計測器", "managementNo": "管理番号", "testItems": "試験項目"}
             for _ in range(3)
         ]
+        legacy["boards"] = [
+            {"name": row["name"], "serialNumber": row["serialNumber"]}
+            for row in legacy["boards"]
+        ]
         with closing(sqlite3.connect(self.app.config["DATABASE_PATH"])) as connection:
             connection.execute(
                 "INSERT INTO record_equipment (record_id, payload) VALUES (?, ?)",
@@ -390,6 +395,7 @@ class LedgerAppTests(unittest.TestCase):
 
         expanded = self.client.get(url).json
         self.assertEqual(expanded["instruments"][:3], legacy["instruments"])
+        self.assertTrue(all(row["revision"] == "" and row["nega"] == "" for row in expanded["boards"]))
         self.assertEqual(expanded["instruments"][3:], [
             {"name": "", "managementNo": "", "testItems": ""} for _ in range(2)
         ])
@@ -454,6 +460,7 @@ class LedgerAppTests(unittest.TestCase):
         invalid_payloads = [{}, [], {**initial, "boards": []}]
         for group, field, value in (
             ("boards", "name", "OTHER"), ("boards", "serialNumber", 123),
+            ("boards", "revision", "ABC123"), ("boards", "nega", "A-1"),
             ("instruments", "name", "a" * 101), ("software", "sdFormat", "OTHER"),
             ("software", "name", "OTHER"), ("software", "version", None),
         ):

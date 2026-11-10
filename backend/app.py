@@ -69,7 +69,7 @@ def load_instrument_choices(config_path):
 def empty_equipment():
     return {
         "boards": [
-            {"name": name, "serialNumber": ""}
+            {"name": name, "revision": "", "nega": "", "serialNumber": ""}
             for name in (
                 "PWS132-A", "PWM89-G0", "PWM85-A3", "INF265-B0",
                 "MDM91-D0", "INF271-B0", "INF267-A1",
@@ -104,23 +104,40 @@ def validate_equipment(data):
             return "機器情報の行数が正しくありません。"
         for index, row in enumerate(rows):
             expected = expected_rows[0] if group == "instruments" else expected_rows[index]
-            if not isinstance(row, dict) or row.keys() != expected.keys():
+            legacy_board_keys = {"name", "serialNumber"}
+            if not isinstance(row, dict) or (
+                row.keys() != expected.keys()
+                and not (group == "boards" and row.keys() == legacy_board_keys)
+            ):
                 return "機器情報の項目が正しくありません。"
             if any(not isinstance(value, str) or len(value) > 100 for value in row.values()):
                 return "各項目は100文字以内の文字列で入力してください。"
             if any(row[field] != expected[field] for field in fixed_fields[group]):
                 return "基板名・ソフト名・SD形式は変更できません。"
+            if group == "boards" and any(
+                not re.fullmatch(r"[A-Za-z0-9]{0,5}", row.get(field, ""))
+                for field in ("revision", "nega")
+            ):
+                return "レビジョン・ネガは半角英数字5文字以内で入力してください。"
     return None
 
 
 def normalize_equipment(data):
+    default_boards = empty_equipment()["boards"]
     instruments = list(data["instruments"])
     last_filled_row = max(
         (index + 1 for index, row in enumerate(instruments) if any(row.values())),
         default=0,
     )
     row_count = max(DEFAULT_INSTRUMENT_ROWS, last_filled_row)
-    normalized = {**data, "instruments": instruments[:row_count]}
+    normalized = {
+        **data,
+        "boards": [
+            {**default, **row}
+            for default, row in zip(default_boards, data["boards"])
+        ],
+        "instruments": instruments[:row_count],
+    }
     normalized["instruments"].extend(
         {"name": "", "managementNo": "", "testItems": ""}
         for _ in range(row_count - len(normalized["instruments"]))

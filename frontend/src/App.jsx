@@ -1192,6 +1192,8 @@ const EQUIPMENT_SECTIONS = [
     key: 'boards', title: '基板番号',
     columns: [
       { key: 'name', label: '基板名', fixed: true },
+      { key: 'revision', label: 'レビジョン' },
+      { key: 'nega', label: 'ネガ' },
       { key: 'serialNumber', label: 'シリアル No.' },
     ],
   },
@@ -1265,6 +1267,21 @@ function EquipmentForm({ equipment, instrumentChoices = [], setEquipment, disabl
                               value={row.name}
                               maxLength={100}
                               onChange={(event) => changeInstrument(rowIndex, event.target.value)}
+                            />
+                          ) : group.key === 'boards' && ['revision', 'nega'].includes(column.key) ? (
+                            <input
+                              className="equipment-short-input"
+                              type="text"
+                              aria-label={`${row.name} ${column.label}`}
+                              value={row[column.key]}
+                              maxLength={5}
+                              pattern="[A-Za-z0-9]{0,5}"
+                              onChange={(event) => {
+                                const { value } = event.target;
+                                if (/^[A-Za-z0-9]{0,5}$/.test(value)) {
+                                  changeField(group.key, rowIndex, column.key, value);
+                                }
+                              }}
                             />
                           ) : (
                             <input

@@ -344,7 +344,7 @@ class LedgerAppTests(unittest.TestCase):
         ])
         self.assertTrue(all(row["serialNumber"] == "" for row in equipment["boards"]))
         self.assertEqual(equipment["instruments"], [
-            {"name": "", "managementNo": "", "testItems": ""} for _ in range(3)
+            {"name": "", "managementNo": "", "testItems": ""} for _ in range(5)
         ])
         self.assertEqual(equipment["software"], [
             {"name": "テストプロ", "sdFormat": "TEST0306", "version": "", "checksum": ""},
@@ -369,8 +369,79 @@ class LedgerAppTests(unittest.TestCase):
         with closing(sqlite3.connect(self.app.config["DATABASE_PATH"])) as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM record_equipment").fetchone()[0], 0)
 
+    def test_equipment_pads_legacy_three_instrument_rows(self):
+        self.login()
+        record_id = self.client.post(
+            "/api/records", data=self.record_data(),
+            headers={"X-CSRF-Token": self.csrf_token},
+        ).json["id"]
+        url = f"/api/records/{record_id}/equipment"
+        legacy = self.client.get(url).json
+        legacy["instruments"] = [
+            {"name": "計測器", "managementNo": "管理番号", "testItems": "試験項目"}
+            for _ in range(3)
+        ]
+        with closing(sqlite3.connect(self.app.config["DATABASE_PATH"])) as connection:
+            connection.execute(
+                "INSERT INTO record_equipment (record_id, payload) VALUES (?, ?)",
+                (record_id, json.dumps(legacy)),
+            )
+            connection.commit()
+
+        expanded = self.client.get(url).json
+        self.assertEqual(expanded["instruments"][:3], legacy["instruments"])
+        self.assertEqual(expanded["instruments"][3:], [
+            {"name": "", "managementNo": "", "testItems": ""} for _ in range(2)
+        ])
+
+        response = self.client.put(
+            url, json=legacy, headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json, expanded)
+
+    def test_instrument_choices_are_loaded_from_json(self):
+        self.login()
+        record_id = self.client.post(
+            "/api/records", data=self.record_data(),
+            headers={"X-CSRF-Token": self.csrf_token},
+        ).json["id"]
+        config_path = Path(self.temp_dir.name) / "equipment-config.json"
+        choices = [{"name": "カスタム試験器", "managementNo": "CUSTOM-01"}]
+        config_path.write_text(json.dumps({"instrumentChoices": choices}), encoding="utf-8")
+        configured_app = create_app({
+            "TESTING": True,
+            "SECRET_KEY": "test-secret-key",
+            "LEDGER_USERNAME": "operator",
+            "LEDGER_PASSWORD_HASH": generate_password_hash("correct horse battery"),
+            "DATABASE_PATH": self.app.config["DATABASE_PATH"],
+            "EQUIPMENT_CONFIG_PATH": str(config_path),
+            "SESSION_COOKIE_SECURE": False,
+        })
+        configured_client = configured_app.test_client()
+        with configured_client.session_transaction() as session:
+            session["username"] = "operator"
+
+        self.assertEqual(
+            configured_client.get("/api/equipment-config").json,
+            {"instrumentChoices": choices},
+        )
+        equipment = configured_client.get(f"/api/records/{record_id}/equipment").json
+        self.assertEqual(len(equipment["instruments"]), 5)
+
+    def test_equipment_config_rejects_invalid_choices(self):
+        config_path = Path(self.temp_dir.name) / "invalid-equipment-config.json"
+        config_path.write_text(json.dumps({"instrumentChoices": [{"name": "重複なし管理番号なし"}]}), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "instrumentChoices"):
+            create_app({
+                "TESTING": True,
+                "EQUIPMENT_CONFIG_PATH": str(config_path),
+                "DATABASE_PATH": str(Path(self.temp_dir.name) / "invalid.sqlite3"),
+            })
+
     def test_equipment_requires_authentication_and_valid_fields(self):
         self.assertEqual(self.client.get("/api/records/1/equipment").status_code, 401)
+        self.assertEqual(self.client.get("/api/equipment-config").status_code, 401)
         self.assertEqual(self.client.put("/api/records/1/equipment", json={}).status_code, 401)
         self.login()
         record_id = self.client.post(

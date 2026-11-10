@@ -1,0 +1,16 @@
+{
+  "instrumentChoices": [
+    {
+      "name": "自動試験器",
+      "managementNo": "鉄シブ#1"
+    },
+    {
+      "name": "デジタルマルチメーター",
+      "managementNo": "AA123456"
+    },
+    {
+      "name": "オシロスコープ",
+      "managementNo": "AB654321"
+    }
+  ]
+}

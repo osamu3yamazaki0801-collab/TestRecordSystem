@@ -23,7 +23,47 @@ from backend.trial_results import parse_trial_results_file
 MAX_FILE_SIZE = 100 * 1024 * 1024
 MAX_TOTAL_FILE_SIZE = 100 * 1024 * 1024
 MAX_REQUEST_SIZE = MAX_TOTAL_FILE_SIZE + 2 * 1024 * 1024
+DEFAULT_INSTRUMENT_ROWS = 5
+MAX_INSTRUMENT_ROWS = 50
+MAX_INSTRUMENT_CHOICES = 50
+DEFAULT_INSTRUMENT_CHOICES = [
+    {"name": "自動試験器", "managementNo": "鉄シブ#1"},
+    {"name": "デジタルマルチメーター", "managementNo": "AA123456"},
+]
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def load_instrument_choices(config_path):
+    try:
+        with Path(config_path).open(encoding="utf-8") as config_file:
+            config = json.load(config_file)
+    except FileNotFoundError:
+        return DEFAULT_INSTRUMENT_CHOICES
+    except json.JSONDecodeError as error:
+        raise ValueError(f"計測器設定JSONを読み込めません: {config_path}") from error
+
+    choices = config.get("instrumentChoices") if isinstance(config, dict) else None
+    if not isinstance(choices, list) or len(choices) > MAX_INSTRUMENT_CHOICES:
+        raise ValueError(
+            f"計測器設定JSONのinstrumentChoicesは{MAX_INSTRUMENT_CHOICES}件以内の配列にしてください。"
+        )
+    names = set()
+    for choice in choices:
+        if (
+            not isinstance(choice, dict)
+            or choice.keys() != {"name", "managementNo"}
+            or not isinstance(choice["name"], str)
+            or not choice["name"].strip()
+            or len(choice["name"]) > 100
+            or not isinstance(choice["managementNo"], str)
+            or len(choice["managementNo"]) > 100
+            or choice["name"] in names
+        ):
+            raise ValueError(
+                "各instrumentChoices項目には一意なnameとmanagementNoを指定してください（各100文字以内）。"
+            )
+        names.add(choice["name"])
+    return choices
 
 
 def empty_equipment():
@@ -37,7 +77,7 @@ def empty_equipment():
         ],
         "instruments": [
             {"name": "", "managementNo": "", "testItems": ""}
-            for _ in range(3)
+            for _ in range(DEFAULT_INSTRUMENT_ROWS)
         ],
         "software": [
             {"name": name, "sdFormat": sd_format, "version": "", "checksum": ""}
@@ -57,9 +97,13 @@ def validate_equipment(data):
     fixed_fields = {"boards": {"name"}, "instruments": set(), "software": {"name", "sdFormat"}}
     for group, expected_rows in template.items():
         rows = data[group]
-        if not isinstance(rows, list) or len(rows) != len(expected_rows):
+        if group == "instruments":
+            if not isinstance(rows, list) or not 1 <= len(rows) <= MAX_INSTRUMENT_ROWS:
+                return "機器情報の行数が正しくありません。"
+        elif not isinstance(rows, list) or len(rows) != len(expected_rows):
             return "機器情報の行数が正しくありません。"
-        for row, expected in zip(rows, expected_rows):
+        for index, row in enumerate(rows):
+            expected = expected_rows[0] if group == "instruments" else expected_rows[index]
             if not isinstance(row, dict) or row.keys() != expected.keys():
                 return "機器情報の項目が正しくありません。"
             if any(not isinstance(value, str) or len(value) > 100 for value in row.values()):
@@ -67,6 +111,21 @@ def validate_equipment(data):
             if any(row[field] != expected[field] for field in fixed_fields[group]):
                 return "基板名・ソフト名・SD形式は変更できません。"
     return None
+
+
+def normalize_equipment(data):
+    instruments = list(data["instruments"])
+    last_filled_row = max(
+        (index + 1 for index, row in enumerate(instruments) if any(row.values())),
+        default=0,
+    )
+    row_count = max(DEFAULT_INSTRUMENT_ROWS, last_filled_row)
+    normalized = {**data, "instruments": instruments[:row_count]}
+    normalized["instruments"].extend(
+        {"name": "", "managementNo": "", "testItems": ""}
+        for _ in range(row_count - len(normalized["instruments"]))
+    )
+    return normalized
 
 
 # 日本語テキスト判定。
@@ -96,6 +155,10 @@ def create_app(test_config=None):
             "LEDGER_FRONTEND_DIST_PATH",
             str(PROJECT_ROOT / "frontend" / "dist"),
         ),
+        EQUIPMENT_CONFIG_PATH=os.environ.get(
+            "LEDGER_EQUIPMENT_CONFIG_PATH",
+            str(PROJECT_ROOT / "equipment-config.json"),
+        ),
         DATABASE_PATH=os.environ.get(
             "LEDGER_DATABASE_PATH",
             str(PROJECT_ROOT / "instance" / "trial-ledger.sqlite3"),
@@ -109,6 +172,9 @@ def create_app(test_config=None):
     )
     if test_config:
         app.config.update(test_config)
+    app.config["INSTRUMENT_CHOICES"] = load_instrument_choices(
+        app.config["EQUIPMENT_CONFIG_PATH"]
+    )
 
     # SQLite への接続を共通化する。
     # DB ファイルが存在しないときはフォルダを自動作成する。
@@ -594,6 +660,7 @@ def create_app(test_config=None):
             error = validate_equipment(data)
             if error:
                 return jsonify(error=error), 400
+            data = normalize_equipment(data)
 
         with closing(connect_db()) as connection, connection:
             if not connection.execute(
@@ -612,7 +679,13 @@ def create_app(test_config=None):
             row = connection.execute(
                 "SELECT payload FROM record_equipment WHERE record_id = ?", (record_id,)
             ).fetchone()
-        return jsonify(json.loads(row["payload"]) if row else empty_equipment())
+        data = json.loads(row["payload"]) if row else empty_equipment()
+        return jsonify(normalize_equipment(data))
+
+    @app.get("/api/equipment-config")
+    @require_login
+    def get_equipment_config():
+        return jsonify(instrumentChoices=app.config["INSTRUMENT_CHOICES"])
 
     @app.put("/api/records/<int:record_id>/details")
     @app.put("/api/records/<int:record_id>")
@@ -644,6 +717,7 @@ def create_app(test_config=None):
             error = validate_equipment(equipment)
             if error:
                 return jsonify(error=error), 400
+            equipment = normalize_equipment(equipment)
             if (
                 not isinstance(jumper_checks, dict)
                 or set(jumper_checks) != {"W1", "W2"}

@@ -143,6 +143,7 @@ function App() {
   const [selectedRecordId, setSelectedRecordId] = useState(null);
   const [detailRecord, setDetailRecord] = useState(null);
   const [detailEquipment, setDetailEquipment] = useState(null);
+  const [instrumentChoices, setInstrumentChoices] = useState([]);
   const [detailJumpers, setDetailJumpers] = useState(null);
   const savedDetails = useRef({ equipment: null, jumpers: null });
   const [detailMessage, setDetailMessage] = useState({ text: '', type: '' });
@@ -229,7 +230,8 @@ function App() {
       apiRequest('/api/records', csrfToken.current),
       apiRequest(`/api/records/${detailRecordId}/equipment`, csrfToken.current),
       apiRequest(`/api/records/${detailRecordId}/jumpers`, csrfToken.current),
-    ]).then(([result, equipment, jumpers]) => {
+      apiRequest('/api/equipment-config', csrfToken.current),
+    ]).then(([result, equipment, jumpers, config]) => {
       if (!active) return;
       const record = result.find((item) => String(item.id) === detailRecordId);
       if (!record) {
@@ -238,6 +240,7 @@ function App() {
       }
       handleEditRecord(record);
       setDetailEquipment(equipment);
+      setInstrumentChoices(config.instrumentChoices);
       setDetailJumpers(jumpers);
       savedDetails.current = { equipment, jumpers };
       setDetailMessage({ text: '', type: '' });
@@ -629,6 +632,7 @@ function App() {
             onClose={() => window.close()}
             recordDirty={recordDirty}
             equipment={detailEquipment}
+            instrumentChoices={instrumentChoices}
             setEquipment={setDetailEquipment}
             jumpers={detailJumpers}
             setJumpers={setDetailJumpers}
@@ -914,7 +918,7 @@ function RegistrationForm({ registerForm, handleRegister, registrationValues, se
   );
 }
 
-function RecordDetails({ record, onClose, recordDirty, registering, registrationForm, equipment, setEquipment, jumpers, setJumpers, onDirty, cancelRegister, registerMessage, pendingFiles, existingFiles, onFilesChanged, csrfToken, setAuthenticated, setLoginError }) {
+function RecordDetails({ record, onClose, recordDirty, registering, registrationForm, equipment, instrumentChoices, setEquipment, jumpers, setJumpers, onDirty, cancelRegister, registerMessage, pendingFiles, existingFiles, onFilesChanged, csrfToken, setAuthenticated, setLoginError }) {
   const [activeTab, setActiveTab] = useState(0);
   const [commonPanelWidth, setCommonPanelWidth] = useState(240);
   const [fileActionPending, setFileActionPending] = useState(false);
@@ -1105,7 +1109,7 @@ function RecordDetails({ record, onClose, recordDirty, registering, registration
           aria-labelledby={`record-detail-tab-${index}`}
           hidden={activeTab !== index}
         >
-          {index === 0 && <EquipmentForm equipment={equipment} setEquipment={setEquipment} disabled={registering} onDirty={onDirty} groupKeys={['boards', 'instruments']} />}
+          {index === 0 && <EquipmentForm equipment={equipment} instrumentChoices={instrumentChoices} setEquipment={setEquipment} disabled={registering} onDirty={onDirty} groupKeys={['boards', 'instruments']} />}
           {index === 1 && (
             <>
               <EquipmentForm equipment={equipment} setEquipment={setEquipment} disabled={registering} onDirty={onDirty} groupKeys={['software']} />
@@ -1196,7 +1200,7 @@ const EQUIPMENT_SECTIONS = [
     columns: [
       { key: 'name', label: '計測器' },
       { key: 'managementNo', label: '管理番号' },
-      { key: 'testItems', label: '使用試験項目(5T3RD381)' },
+      { key: 'testItems', label: '試験項目' },
     ],
   },
   {
@@ -1210,11 +1214,22 @@ const EQUIPMENT_SECTIONS = [
   },
 ];
 
-function EquipmentForm({ equipment, setEquipment, disabled, onDirty, groupKeys }) {
+function EquipmentForm({ equipment, instrumentChoices = [], setEquipment, disabled, onDirty, groupKeys }) {
   function changeField(group, rowIndex, field, value) {
     setEquipment((current) => ({
       ...current,
       [group]: current[group].map((row, index) => index === rowIndex ? { ...row, [field]: value } : row),
+    }));
+    onDirty();
+  }
+
+  function changeInstrument(rowIndex, name) {
+    const choice = instrumentChoices.find((item) => item.name === name);
+    setEquipment((current) => ({
+      ...current,
+      instruments: current.instruments.map((row, index) => index === rowIndex
+        ? { ...row, name, managementNo: choice?.managementNo || '' }
+        : row),
     }));
     onDirty();
   }
@@ -1226,6 +1241,11 @@ function EquipmentForm({ equipment, setEquipment, disabled, onDirty, groupKeys }
   return (
     <div className="equipment-form" aria-busy={disabled}>
       <fieldset disabled={disabled}>
+        {groupKeys.includes('instruments') && (
+          <datalist id="instrument-name-options">
+            {instrumentChoices.map((choice) => <option key={choice.name} value={choice.name} />)}
+          </datalist>
+        )}
         {EQUIPMENT_SECTIONS.filter((group) => groupKeys.includes(group.key)).map((group) => (
           <section key={group.key} aria-labelledby={`equipment-${group.key}-heading`}>
             <h3 id={`equipment-${group.key}-heading`} className="jumper-heading">{group.title}</h3>
@@ -1237,7 +1257,16 @@ function EquipmentForm({ equipment, setEquipment, disabled, onDirty, groupKeys }
                     <tr key={rowIndex}>
                       {group.columns.map((column) => (
                         <td key={column.key}>
-                          {column.fixed ? row[column.key] : (
+                          {column.fixed ? row[column.key] : group.key === 'instruments' && column.key === 'name' ? (
+                            <input
+                              type="text"
+                              list="instrument-name-options"
+                              aria-label={`使用計測器 ${rowIndex + 1}行目 計測器`}
+                              value={row.name}
+                              maxLength={100}
+                              onChange={(event) => changeInstrument(rowIndex, event.target.value)}
+                            />
+                          ) : (
                             <input
                               type="text"
                               aria-label={`${group.key === 'instruments' ? `使用計測器 ${rowIndex + 1}行目` : row.name} ${column.label}`}

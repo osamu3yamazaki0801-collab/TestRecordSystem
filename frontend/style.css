@@ -1407,8 +1407,8 @@ tbody tr:last-child td {
 }
 
 .jumper-table-wrap {
-  width: 60%;
-  min-width: min(100%, 300px);
+  width: 16%;
+  min-width: 0;
   max-width: 100%;
   margin-bottom: 16px;
 }
@@ -1416,7 +1416,13 @@ tbody tr:last-child td {
 .jumper-table th,
 .jumper-table td {
   text-align: center;
+  padding-right: 4px;
+  padding-left: 4px;
 }
+
+.jumper-table th:first-child { width: 50%; }
+.jumper-table th:nth-child(2),
+.jumper-table th:nth-child(3) { width: 25%; }
 
 .jumper-table td {
   height: 37px;
@@ -1525,8 +1531,9 @@ tbody tr:last-child td {
   max-width: 100%;
 }
 
-.equipment-table-wrap:has(> .equipment-table--software) {
-  width: 80%;
+.equipment-table-wrap:has(> .equipment-table--software-install),
+.equipment-table-wrap:has(> .equipment-table--pld-version) {
+  width: min(50%, 560px);
   min-width: min(100%, 400px);
   max-width: 100%;
 }
@@ -1548,6 +1555,10 @@ tbody tr:last-child td {
 
 .equipment-table--software th:first-child {
   width: 30%;
+}
+
+.equipment-table--software th:nth-child(2) {
+  width: 14%;
 }
 
 .equipment-table input {

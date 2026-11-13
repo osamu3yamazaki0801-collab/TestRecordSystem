@@ -1,4 +1,20 @@
 {
+  "_説明": [
+    "boards配列の要素数が基板番号表の表示行数になります。",
+    "不要な基板はboards配列からオブジェクトごと削除してください。削除した基板の行は表示されません。",
+    "instrumentChoices配列に計測器名(name)と管理番号(managementNo)を指定すると、計測器欄の候補に表示されます。入力した計測器名がnameと一致すると、管理番号が自動入力されます。",
+    "instrumentChoicesのnameは重複できず、配列は50件以内にしてください。候補以外の計測器名・管理番号も画面で自由入力できます。",
+    "JSONでは//や/* ... */のコメントは使えません。要素を無効にする場合はコメントアウトせず削除してください。"
+  ],
+  "boards": [
+    { "name": "PWS132-A", "revision": "",  "nega": "", "serialNumber": "" },
+    { "name": "PWM89-G0",  "revision": "", "nega": "", "serialNumber": "" },
+    { "name": "PWM85-A3",  "revision": "", "nega": "", "serialNumber": "" },
+    { "name": "INF265-B0", "revision": "", "nega": "", "serialNumber": "" },
+    { "name": "MDM91-D0",  "revision": "", "nega": "", "serialNumber": "" },
+    { "name": "INF271-B0", "revision": "", "nega": "", "serialNumber": "" },
+    { "name": "INF267-A1", "revision": "", "nega": "", "serialNumber": "" }
+  ],
   "instrumentChoices": [
     {
       "name": "自動試験器",

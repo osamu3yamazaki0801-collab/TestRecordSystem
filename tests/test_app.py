@@ -338,12 +338,7 @@ class LedgerAppTests(unittest.TestCase):
         ).json["id"] for _ in range(2)]
         url = f"/api/records/{record_ids[0]}/equipment"
         equipment = self.client.get(url).json
-        self.assertEqual([row["name"] for row in equipment["boards"]], [
-            "PWS132-A", "PWM89-G0", "PWM85-A3", "INF265-B0",
-            "MDM91-D0", "INF271-B0", "INF267-A1",
-        ])
-        self.assertTrue(all(row["serialNumber"] == "" for row in equipment["boards"]))
-        self.assertTrue(all(row["revision"] == "" and row["nega"] == "" for row in equipment["boards"]))
+        self.assertEqual(equipment["boards"], self.app.config["BOARD_DEFAULTS"])
         self.assertEqual(equipment["instruments"], [
             {"name": "", "managementNo": "", "testItems": ""} for _ in range(5)
         ])
@@ -414,7 +409,13 @@ class LedgerAppTests(unittest.TestCase):
         ).json["id"]
         config_path = Path(self.temp_dir.name) / "equipment-config.json"
         choices = [{"name": "カスタム試験器", "managementNo": "CUSTOM-01"}]
-        config_path.write_text(json.dumps({"instrumentChoices": choices}), encoding="utf-8")
+        boards = [
+            {"name": f"CUSTOM-{index}", "revision": "R1", "nega": "N1", "serialNumber": "SERIAL"}
+            for index in range(3)
+        ]
+        config_path.write_text(
+            json.dumps({"instrumentChoices": choices, "boards": boards}), encoding="utf-8",
+        )
         configured_app = create_app({
             "TESTING": True,
             "SECRET_KEY": "test-secret-key",
@@ -434,6 +435,21 @@ class LedgerAppTests(unittest.TestCase):
         )
         equipment = configured_client.get(f"/api/records/{record_id}/equipment").json
         self.assertEqual(len(equipment["instruments"]), 5)
+        self.assertEqual(equipment["boards"], boards)
+
+    def test_equipment_config_rejects_more_than_fifty_boards(self):
+        config_path = Path(self.temp_dir.name) / "too-many-boards.json"
+        boards = [
+            {"name": f"BOARD-{index}", "revision": "", "nega": "", "serialNumber": ""}
+            for index in range(51)
+        ]
+        config_path.write_text(json.dumps({"boards": boards}), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "boards"):
+            create_app({
+                "TESTING": True,
+                "EQUIPMENT_CONFIG_PATH": str(config_path),
+                "DATABASE_PATH": str(Path(self.temp_dir.name) / "too-many-boards.sqlite3"),
+            })
 
     def test_equipment_config_rejects_invalid_choices(self):
         config_path = Path(self.temp_dir.name) / "invalid-equipment-config.json"

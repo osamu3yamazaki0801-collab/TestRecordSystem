@@ -1206,7 +1206,7 @@ const EQUIPMENT_SECTIONS = [
     ],
   },
   {
-    key: 'software', sectionId: 'software', title: 'インストールソフト', rowIndexes: [0],
+    key: 'software', sectionId: 'software-install', title: 'インストールソフト', rowIndexes: [0],
     columns: [
       { key: 'name', label: 'ソフト', fixed: true },
       { key: 'sdFormat', label: 'SD 形式', fixed: true },
@@ -1261,7 +1261,7 @@ function EquipmentForm({ equipment, instrumentChoices = [], setEquipment, disabl
           <section key={group.sectionId || group.key} aria-labelledby={`equipment-${group.sectionId || group.key}-heading`}>
             <h3 id={`equipment-${group.sectionId || group.key}-heading`} className="jumper-heading">{group.title}</h3>
             <div className="equipment-table-wrap">
-              <table className={`equipment-table equipment-table--${group.key}`} aria-label={group.title}>
+              <table className={`equipment-table equipment-table--${group.key} equipment-table--${group.sectionId || group.key}`} aria-label={group.title}>
                 <thead><tr>{group.columns.map((column) => <th key={column.key} scope="col">{column.label}</th>)}</tr></thead>
                 <tbody>
                   {(group.rowIndexes || equipment[group.key].map((_, index) => index)).map((rowIndex) => {

@@ -26,6 +26,13 @@ MAX_REQUEST_SIZE = MAX_TOTAL_FILE_SIZE + 2 * 1024 * 1024
 DEFAULT_INSTRUMENT_ROWS = 5
 MAX_INSTRUMENT_ROWS = 50
 MAX_INSTRUMENT_CHOICES = 50
+DEFAULT_BOARD_DEFAULTS = [
+    {"name": name, "revision": "", "nega": "", "serialNumber": ""}
+    for name in (
+        "PWS132-A", "PWM89-G0", "PWM85-A3", "INF265-B0",
+        "MDM91-D0", "INF271-B0", "INF267-A1",
+    )
+]
 DEFAULT_INSTRUMENT_CHOICES = [
     {"name": "自動試験器", "managementNo": "鉄シブ#1"},
     {"name": "デジタルマルチメーター", "managementNo": "AA123456"},
@@ -33,16 +40,18 @@ DEFAULT_INSTRUMENT_CHOICES = [
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
-def load_instrument_choices(config_path):
+def load_equipment_config(config_path):
     try:
         with Path(config_path).open(encoding="utf-8") as config_file:
             config = json.load(config_file)
     except FileNotFoundError:
-        return DEFAULT_INSTRUMENT_CHOICES
+        config = {}
     except json.JSONDecodeError as error:
         raise ValueError(f"計測器設定JSONを読み込めません: {config_path}") from error
 
-    choices = config.get("instrumentChoices") if isinstance(config, dict) else None
+    if not isinstance(config, dict):
+        raise ValueError("機器設定JSONのルートはオブジェクトにしてください。")
+    choices = config.get("instrumentChoices", DEFAULT_INSTRUMENT_CHOICES)
     if not isinstance(choices, list) or len(choices) > MAX_INSTRUMENT_CHOICES:
         raise ValueError(
             f"計測器設定JSONのinstrumentChoicesは{MAX_INSTRUMENT_CHOICES}件以内の配列にしてください。"
@@ -63,18 +72,38 @@ def load_instrument_choices(config_path):
                 "各instrumentChoices項目には一意なnameとmanagementNoを指定してください（各100文字以内）。"
             )
         names.add(choice["name"])
-    return choices
-
-
-def empty_equipment():
-    return {
-        "boards": [
-            {"name": name, "revision": "", "nega": "", "serialNumber": ""}
-            for name in (
-                "PWS132-A", "PWM89-G0", "PWM85-A3", "INF265-B0",
-                "MDM91-D0", "INF271-B0", "INF267-A1",
+    boards = config.get("boards", DEFAULT_BOARD_DEFAULTS)
+    if not isinstance(boards, list) or len(boards) > 50:
+        raise ValueError("機器設定JSONのboardsは50件以内の配列にしてください。")
+    board_names = set()
+    for board in boards:
+        if (
+            not isinstance(board, dict)
+            or board.keys() != {"name", "revision", "nega", "serialNumber"}
+            or not isinstance(board["name"], str)
+            or not board["name"].strip()
+            or len(board["name"]) > 100
+            or board["name"] in board_names
+            or any(
+                not isinstance(board[field], str)
+                for field in ("revision", "nega", "serialNumber")
             )
-        ],
+            or any(
+                not re.fullmatch(r"[A-Za-z0-9]{0,5}", board[field])
+                for field in ("revision", "nega")
+            )
+            or len(board["serialNumber"]) > 100
+        ):
+            raise ValueError(
+                "各boards項目には一意なname、revision、nega、serialNumberを設定してください。"
+            )
+        board_names.add(board["name"])
+    return {"instrumentChoices": choices, "boards": boards}
+
+
+def empty_equipment(board_defaults=DEFAULT_BOARD_DEFAULTS):
+    return {
+        "boards": [dict(board) for board in board_defaults],
         "instruments": [
             {"name": "", "managementNo": "", "testItems": ""}
             for _ in range(DEFAULT_INSTRUMENT_ROWS)
@@ -90,14 +119,17 @@ def empty_equipment():
     }
 
 
-def validate_equipment(data):
-    template = empty_equipment()
+def validate_equipment(data, board_defaults=DEFAULT_BOARD_DEFAULTS):
+    template = empty_equipment(board_defaults)
     if not isinstance(data, dict) or data.keys() != template.keys():
         return "機器情報の形式が正しくありません。"
     fixed_fields = {"boards": {"name"}, "instruments": set(), "software": {"name", "sdFormat"}}
     for group, expected_rows in template.items():
         rows = data[group]
-        if group == "instruments":
+        if group == "boards":
+            if not isinstance(rows, list) or len(rows) != len(expected_rows):
+                return "基板情報の行数が設定と一致しません。"
+        elif group == "instruments":
             if not isinstance(rows, list) or not 1 <= len(rows) <= MAX_INSTRUMENT_ROWS:
                 return "機器情報の行数が正しくありません。"
         elif not isinstance(rows, list) or len(rows) != len(expected_rows):
@@ -122,8 +154,7 @@ def validate_equipment(data):
     return None
 
 
-def normalize_equipment(data):
-    default_boards = empty_equipment()["boards"]
+def normalize_equipment(data, board_defaults=DEFAULT_BOARD_DEFAULTS):
     instruments = list(data["instruments"])
     last_filled_row = max(
         (index + 1 for index, row in enumerate(instruments) if any(row.values())),
@@ -133,8 +164,12 @@ def normalize_equipment(data):
     normalized = {
         **data,
         "boards": [
-            {**default, **row}
-            for default, row in zip(default_boards, data["boards"])
+            {
+                **default,
+                **(data["boards"][index] if index < len(data["boards"]) else {}),
+                "name": default["name"],
+            }
+            for index, default in enumerate(board_defaults)
         ],
         "instruments": instruments[:row_count],
     }
@@ -189,9 +224,11 @@ def create_app(test_config=None):
     )
     if test_config:
         app.config.update(test_config)
-    app.config["INSTRUMENT_CHOICES"] = load_instrument_choices(
+    equipment_config = load_equipment_config(
         app.config["EQUIPMENT_CONFIG_PATH"]
     )
+    app.config["INSTRUMENT_CHOICES"] = equipment_config["instrumentChoices"]
+    app.config["BOARD_DEFAULTS"] = equipment_config["boards"]
 
     # SQLite への接続を共通化する。
     # DB ファイルが存在しないときはフォルダを自動作成する。
@@ -674,10 +711,10 @@ def create_app(test_config=None):
         data = None
         if request.method == "PUT":
             data = request.get_json(silent=True)
-            error = validate_equipment(data)
+            error = validate_equipment(data, app.config["BOARD_DEFAULTS"])
             if error:
                 return jsonify(error=error), 400
-            data = normalize_equipment(data)
+            data = normalize_equipment(data, app.config["BOARD_DEFAULTS"])
 
         with closing(connect_db()) as connection, connection:
             if not connection.execute(
@@ -696,8 +733,8 @@ def create_app(test_config=None):
             row = connection.execute(
                 "SELECT payload FROM record_equipment WHERE record_id = ?", (record_id,)
             ).fetchone()
-        data = json.loads(row["payload"]) if row else empty_equipment()
-        return jsonify(normalize_equipment(data))
+        data = json.loads(row["payload"]) if row else empty_equipment(app.config["BOARD_DEFAULTS"])
+        return jsonify(normalize_equipment(data, app.config["BOARD_DEFAULTS"]))
 
     @app.get("/api/equipment-config")
     @require_login
@@ -731,10 +768,10 @@ def create_app(test_config=None):
                 jumper_checks = json.loads(request.form.get("jumperChecks", ""))
             except (ValueError, TypeError):
                 return jsonify(error="機器情報・ジャンパ確認の形式が正しくありません。"), 400
-            error = validate_equipment(equipment)
+            error = validate_equipment(equipment, app.config["BOARD_DEFAULTS"])
             if error:
                 return jsonify(error=error), 400
-            equipment = normalize_equipment(equipment)
+            equipment = normalize_equipment(equipment, app.config["BOARD_DEFAULTS"])
             if (
                 not isinstance(jumper_checks, dict)
                 or set(jumper_checks) != {"W1", "W2"}

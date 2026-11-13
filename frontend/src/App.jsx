@@ -1189,7 +1189,7 @@ function RecordDetails({ record, onClose, recordDirty, registering, registration
 
 const EQUIPMENT_SECTIONS = [
   {
-    key: 'boards', title: '基板番号',
+    key: 'boards', title: '基板情報',
     columns: [
       { key: 'name', label: '基板名', fixed: true },
       { key: 'revision', label: 'レビジョン' },

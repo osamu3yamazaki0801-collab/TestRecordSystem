@@ -342,6 +342,60 @@ button {
   }
 }
 
+/* Slightly narrow the registration date and manager fields on the registration page only. */
+.registration-page .record-field-registration-date {
+  flex-basis: calc(11.25% - 6.075px);
+}
+
+.registration-page .record-field-manager {
+  flex-basis: calc(10.8% - 5.832px);
+}
+
+.registration-page .record-field-result-file {
+  min-width: 180px;
+  flex: 1 1 180px;
+}
+
+@media (min-width: 1535px) {
+  .registration-page .record-field-registration-date {
+    flex-basis: calc(9% - 6.48px);
+  }
+
+  .registration-page .record-field-manager {
+    flex-basis: calc(8.64% - 6.2208px);
+  }
+}
+
+@media (max-width: 1254px) and (min-width: 934px) {
+  .registration-page .record-field-registration-date {
+    flex-basis: calc(15% - 5.4px);
+  }
+
+  .registration-page .record-field-manager {
+    flex-basis: calc(14.4% - 5.184px);
+  }
+}
+
+@media (max-width: 933px) and (min-width: 761px) {
+  .registration-page .record-field-registration-date {
+    flex-basis: calc(22.5% - 4.05px);
+  }
+
+  .registration-page .record-field-manager {
+    flex-basis: calc(21.6% - 3.888px);
+  }
+}
+
+@media (max-width: 760px) {
+  .registration-page .record-field-registration-date {
+    flex-basis: 45%;
+  }
+
+  .registration-page .record-field-manager {
+    flex-basis: 43.2%;
+  }
+}
+
 .primary-button,
 .secondary-button,
 .gold-button,

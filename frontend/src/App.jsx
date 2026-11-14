@@ -31,6 +31,7 @@ const EMPTY_FILTERS = {
   date: '',
   manager: '',
 };
+let registrationRowSequence = 0;
 
 // API 通信で 4xx/5xx を分かりやすく扱うためのエラー型。
 class ApiError extends Error {
@@ -67,11 +68,13 @@ function todayDateString() {
 
 function emptyRegistrationValues() {
   return {
+    rowId: ++registrationRowSequence,
     trialNo: '',
     projectName: '',
     productNo: '',
     registrationDate: todayDateString(),
     manager: '',
+    resultFile: null,
   };
 }
 
@@ -432,9 +435,10 @@ function App() {
       setRegisterMessage({ text: `${prefix}${validationError.error}`, type: 'error' });
       return;
     }
-    const selectedFiles = (isEditing ? formData.getAll('resultFiles') : [])
-      .filter((file) => file instanceof File && file.name);
-    if (selectedFiles.length > 1) {
+    const selectedFiles = isEditing
+      ? formData.getAll('resultFiles').filter((file) => file instanceof File && file.name)
+      : registrationRows.map((row) => row.resultFile).filter((file) => file instanceof File && file.name);
+    if (isEditing && selectedFiles.length > 1) {
       setRegisterMessage({ text: '試験結果ファイルは1件だけ登録できます。', type: 'error' });
       return;
     }
@@ -471,10 +475,19 @@ function App() {
         requestOptions.body = formData;
       } else if (valuesList.length > 1) {
         requestUrl = '/api/records/batch';
-        requestOptions.headers = { 'Content-Type': 'application/json' };
-        requestOptions.body = JSON.stringify(valuesList);
+        const batchFormData = new FormData();
+        batchFormData.set('submissions', JSON.stringify(valuesList));
+        registrationRows.forEach((row, index) => {
+          if (row.resultFile instanceof File && row.resultFile.name) {
+            batchFormData.append(`resultFiles-${index}`, row.resultFile);
+          }
+        });
+        requestOptions.body = batchFormData;
       } else {
         fieldNames.forEach((name) => formData.set(name, valuesList[0][name]));
+        if (registrationRows[0].resultFile instanceof File && registrationRows[0].resultFile.name) {
+          formData.append('resultFiles', registrationRows[0].resultFile);
+        }
         requestOptions.body = formData;
       }
       const result = await apiRequest(requestUrl, csrfToken.current, requestOptions);
@@ -485,14 +498,19 @@ function App() {
         setDetailJumpers(updatedJumpers);
         savedDetails.current = { equipment: result.equipment, jumpers: updatedJumpers };
       } else {
-        const createdRecords = result.records || [{ id: result.id, ...valuesList[0] }];
+        const createdRecords = result.records || [{
+          id: result.id,
+          ...valuesList[0],
+          files: result.files || [],
+        }];
         setRecords((current) => [
-          ...createdRecords.map((record) => ({ ...record, files: [] })).reverse(),
+          ...createdRecords.map((record) => ({ ...record, files: record.files || [] })).reverse(),
           ...current,
         ]);
         setSelectedRecordId(createdRecords[createdRecords.length - 1].id);
         setSearchFilters({ ...EMPTY_FILTERS });
         clearRegistrationDraft();
+        setSection('searchSection');
       }
       setRegisterMessage({
         text: isEditing ? '記録を変更しました。' : `登録が完了しました（${valuesList.length}件）。`,
@@ -518,14 +536,16 @@ function App() {
     setExistingFiles([]);
     setRemovedFileIds([]);
     setRegistrationRows([{
+      rowId: ++registrationRowSequence,
       trialNo: record.trialNo,
       projectName: record.projectName,
       productNo: record.productNo,
       registrationDate: record.registrationDate,
       manager: record.manager,
+      resultFile: null,
     }]);
     setRegisterMessage({
-      text: '記録をコピーしました。試験結果ファイルは登録後に記録の詳細から追加できます。',
+      text: '記録をコピーしました。必要に応じて新しい試験結果CSVを選択してください。',
       type: 'success',
     });
   }
@@ -539,6 +559,7 @@ function App() {
     setExistingFiles(record.files || []);
     setRemovedFileIds([]);
     setRegistrationRows([{
+      rowId: ++registrationRowSequence,
       trialNo: record.trialNo,
       projectName: record.projectName,
       productNo: record.productNo,
@@ -899,7 +920,13 @@ function RegistrationForm({ registerForm, handleRegister, registrationRows, setR
     const sharedValues = registrationRows[0] || emptyRegistrationValues();
     setRegistrationRows((rows) => [
       ...rows,
-      { ...sharedValues, trialNo: '', productNo: '' },
+      {
+        ...sharedValues,
+        rowId: ++registrationRowSequence,
+        trialNo: '',
+        productNo: '',
+        resultFile: null,
+      },
     ]);
     onChange();
   }
@@ -914,7 +941,7 @@ function RegistrationForm({ registerForm, handleRegister, registrationRows, setR
             : availableManagers;
           const fieldName = (name) => (index === 0 ? name : `${name}-${index}`);
           return (
-            <section className="registration-entry" key={index} aria-label={!isEditing ? `記録 ${index + 1}` : undefined}>
+            <section className="registration-entry" key={values.rowId ?? index} aria-label={!isEditing ? `記録 ${index + 1}` : undefined}>
               {!isEditing && (
                 <header className="registration-entry-heading">
                   <h3>記録 {index + 1}</h3>
@@ -941,6 +968,23 @@ function RegistrationForm({ registerForm, handleRegister, registrationRows, setR
                   </select>
                   {managerChoices?.length === 0 && <small className="field-help">equipment-config.json の managerChoices に担当者名を設定してください。</small>}
                 </label>
+                {!isEditing && (
+                  <div className="field record-field-result-file result-file-picker">
+                    <span>試験結果（CSV）</span>
+                    <label className="secondary-button file-picker-control">
+                      <span>ファイルを選択</span>
+                      <input
+                        type="file"
+                        accept=".csv,text/csv"
+                        disabled={registering}
+                        onChange={(event) => updateRow(index, 'resultFile', event.currentTarget.files?.[0] || null)}
+                      />
+                    </label>
+                    <small className="field-help">
+                      {values.resultFile ? values.resultFile.name : '任意・登録後に記録の詳細で表示'}
+                    </small>
+                  </div>
+                )}
               </div>
             </section>
           );
@@ -959,7 +1003,9 @@ function RegistrationForm({ registerForm, handleRegister, registrationRows, setR
 }
 
 function RecordDetails({ record, onClose, recordDirty, registering, registrationForm, equipment, instrumentChoices, setEquipment, jumpers, setJumpers, onDirty, cancelRegister, registerMessage, pendingFiles, existingFiles, onFilesChanged, csrfToken, setAuthenticated, setLoginError }) {
-  const [activeTab, setActiveTab] = useState(0);
+  const [activeTab, setActiveTab] = useState(() => (
+    existingFiles.some((file) => /\.csv$/i.test(file.fileName)) ? 2 : 0
+  ));
   const [commonPanelWidth, setCommonPanelWidth] = useState(240);
   const [fileActionPending, setFileActionPending] = useState(false);
   const [fileActionMessage, setFileActionMessage] = useState({ text: '', type: '' });

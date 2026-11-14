@@ -194,6 +194,58 @@ class LedgerAppTests(unittest.TestCase):
             ["T-002", "T-001"],
         )
 
+    def test_batch_registration_saves_each_csv_with_its_record(self):
+        self.login()
+        submissions = [
+            self.record_data(trialNo="T-001"),
+            self.record_data(trialNo="T-002"),
+        ]
+
+        response = self.client.post(
+            "/api/records/batch",
+            data={
+                "submissions": json.dumps(submissions),
+                "resultFiles-0": (io.BytesIO(SAMPLE_RESULTS_CSV.encode("utf-8")), "first.csv"),
+                "resultFiles-1": (io.BytesIO(SAMPLE_RESULTS_CSV.encode("utf-8")), "second.csv"),
+            },
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+
+        self.assertEqual(response.status_code, 201)
+        records = response.json["records"]
+        self.assertEqual([record["files"][0]["fileName"] for record in records], ["first.csv", "second.csv"])
+        for record in records:
+            file_id = record["files"][0]["id"]
+            results = self.client.get(
+                f"/api/records/{record['id']}/files/{file_id}/results"
+            )
+            self.assertEqual(results.status_code, 200)
+            self.assertEqual(
+                [section["title"] for section in results.json["sections"]],
+                ["試験結果 1", "試験結果 2"],
+            )
+
+    def test_batch_registration_rejects_invalid_csv_without_creating_records(self):
+        self.login()
+        submissions = [
+            self.record_data(trialNo="T-001"),
+            self.record_data(trialNo="T-002"),
+        ]
+
+        response = self.client.post(
+            "/api/records/batch",
+            data={
+                "submissions": json.dumps(submissions),
+                "resultFiles-0": (io.BytesIO(SAMPLE_RESULTS_CSV.encode("utf-8")), "valid.csv"),
+                "resultFiles-1": (io.BytesIO(b"not a trial results file"), "invalid.csv"),
+            },
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("2件目", response.json["error"])
+        self.assertEqual(self.client.get("/api/records").json, [])
+
     def test_batch_registration_rejects_all_records_if_one_is_invalid(self):
         self.login()
         submissions = [
@@ -675,10 +727,13 @@ class LedgerAppTests(unittest.TestCase):
 
     def test_trial_results_csv_saved_and_preview_apis(self):
         self.login()
-        record_id = self.client.post(
+        created = self.client.post(
             "/api/records", data=self.record_data(resultFiles=(io.BytesIO(SAMPLE_RESULTS_CSV.encode("cp932")), "results.CSV")),
             headers={"X-CSRF-Token": self.csrf_token},
-        ).json["id"]
+        )
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(created.json["files"][0]["fileName"], "results.CSV")
+        record_id = created.json["id"]
         original = self.client.get("/api/records").json[0]
         file_id = original["files"][0]["id"]
         url = f"/api/records/{record_id}/files/{file_id}/results"
@@ -705,6 +760,20 @@ class LedgerAppTests(unittest.TestCase):
                 headers={"X-CSRF-Token": self.csrf_token},
             )
             self.assertEqual(response.status_code, 400)
+
+    def test_initial_registration_rejects_malformed_csv(self):
+        self.login()
+
+        response = self.client.post(
+            "/api/records",
+            data=self.record_data(
+                resultFiles=(io.BytesIO(b"not a trial results file"), "invalid.csv"),
+            ),
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.client.get("/api/records").json, [])
 
     def test_trial_results_csv_rejected_without_partial_save(self):
         self.login()

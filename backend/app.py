@@ -655,6 +655,12 @@ def create_app(test_config=None):
         )
         if error:
             return jsonify(error=error[0]), error[1]
+        try:
+            for file_name, _content_type, file_data in files:
+                if file_name.lower().endswith(".csv"):
+                    parse_trial_results_file(file_name, file_data)
+        except ValueError as error:
+            return jsonify(error=str(error)), 400
 
         with closing(connect_db()) as connection, connection:
             cursor = connection.execute(
@@ -673,40 +679,68 @@ def create_app(test_config=None):
                 ),
             )
             record_id = cursor.lastrowid
-            connection.executemany(
-                """
-                INSERT INTO record_files (
-                    record_id, file_name, file_content_type, file_data
-                ) VALUES (?, ?, ?, ?)
-                """,
-                [(record_id, file_name, content_type, file_data)
-                 for file_name, content_type, file_data in files],
-            )
-        return jsonify(id=record_id), 201
+            file_metadata = []
+            for file_name, content_type, file_data in files:
+                file_cursor = connection.execute(
+                    """
+                    INSERT INTO record_files (
+                        record_id, file_name, file_content_type, file_data
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    (record_id, file_name, content_type, file_data),
+                )
+                file_metadata.append({
+                    "id": file_cursor.lastrowid,
+                    "fileName": file_name,
+                })
+        return jsonify(id=record_id, files=file_metadata), 201
 
     @app.post("/api/records/batch")
     @require_csrf
     @require_login
     def create_records_batch():
-        submissions = request.get_json(silent=True)
+        if request.is_json:
+            submissions = request.get_json(silent=True)
+            uploads_by_submission = []
+        else:
+            try:
+                submissions = json.loads(request.form.get("submissions", ""))
+            except (TypeError, ValueError):
+                submissions = None
+            uploads_by_submission = []
+            if isinstance(submissions, list):
+                uploads_by_submission = [
+                    request.files.getlist(f"resultFiles-{index}")
+                    for index in range(len(submissions))
+                ]
         if not isinstance(submissions, list) or not submissions:
             return jsonify(error="登録する記録を1件以上指定してください。"), 400
 
         validated_submissions = []
+        total_file_size = 0
         for index, submission in enumerate(submissions, start=1):
             if not isinstance(submission, dict):
                 return jsonify(error=f"{index}件目の入力形式が正しくありません。"), 400
-            values, registration_date, _, error = parse_record_submission(
+            uploads = uploads_by_submission[index - 1] if uploads_by_submission else []
+            values, registration_date, files, error = parse_record_submission(
                 submission,
-                [],
+                uploads,
             )
             if error:
                 return jsonify(error=f"{index}件目: {error[0]}"), error[1]
-            validated_submissions.append((values, registration_date))
+            total_file_size += sum(len(file_data) for _, _, file_data in files)
+            if total_file_size > MAX_TOTAL_FILE_SIZE:
+                return jsonify(error="試験結果ファイルの合計は100 MB以下にしてください。"), 413
+            try:
+                for file_name, _content_type, file_data in files:
+                    parse_trial_results_file(file_name, file_data)
+            except ValueError as error:
+                return jsonify(error=f"{index}件目: {error}"), 400
+            validated_submissions.append((values, registration_date, files))
 
         with closing(connect_db()) as connection, connection:
             created_records = []
-            for values, registration_date in validated_submissions:
+            for values, registration_date, files in validated_submissions:
                 cursor = connection.execute(
                     """
                     INSERT INTO records (
@@ -722,10 +756,27 @@ def create_app(test_config=None):
                         values["manager"],
                     ),
                 )
+                record_id = cursor.lastrowid
+                file_metadata = []
+                for file_name, content_type, file_data in files:
+                    file_cursor = connection.execute(
+                        """
+                        INSERT INTO record_files (
+                            record_id, file_name, file_content_type, file_data
+                        ) VALUES (?, ?, ?, ?)
+                        """,
+                        (record_id, file_name, content_type, file_data),
+                    )
+                    file_metadata.append({
+                        "id": file_cursor.lastrowid,
+                        "fileName": file_name,
+                    })
                 created_records.append({
-                    "id": cursor.lastrowid,
+                    "id": record_id,
                     **values,
                     "registrationDate": registration_date,
+                    "files": file_metadata,
+                    "fileName": file_metadata[0]["fileName"] if file_metadata else None,
                 })
         return jsonify(records=created_records), 201
 

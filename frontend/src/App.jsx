@@ -1205,7 +1205,9 @@ function RecordDetails({ record, onClose, recordDirty, registering, registration
                   <table className="jumper-table equipment-table" aria-label="ジャンパ設定の確認" aria-busy={registering}>
                     <thead><tr><th scope="col">ジャンパ名</th><th scope="col">設定</th><th scope="col">確認結果</th></tr></thead>
                     <tbody>
-                      {jumpers.map((jumper) => (
+                      {jumpers.length === 0 ? (
+                        <tr><td colSpan="3">ジャンパ設定はありません。</td></tr>
+                      ) : jumpers.map((jumper) => (
                         <tr key={jumper.name}>
                           <td>{jumper.name}</td>
                           <td>{jumper.setting}</td>

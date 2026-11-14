@@ -27,12 +27,17 @@ DEFAULT_INSTRUMENT_ROWS = 5
 MAX_INSTRUMENT_ROWS = 50
 MAX_INSTRUMENT_CHOICES = 50
 MAX_MANAGER_CHOICES = 100
+MAX_JUMPERS = 50
 DEFAULT_BOARD_DEFAULTS = [
     {"name": name, "revision": "", "nega": "", "serialNumber": ""}
     for name in (
         "PWS132-A", "PWM89-G0", "PWM85-A3", "INF265-B0",
         "MDM91-D0", "INF271-B0", "INF267-A1",
     )
+]
+DEFAULT_JUMPERS = [
+    {"name": "W1", "setting": "1-2"},
+    {"name": "W2", "setting": "1-2"},
 ]
 DEFAULT_INSTRUMENT_CHOICES = [
     {"name": "自動試験器", "managementNo": "鉄シブ#1"},
@@ -117,10 +122,33 @@ def load_equipment_config(config_path):
                 "各boards項目には一意なname、revision、nega、serialNumberを設定してください。"
             )
         board_names.add(board["name"])
+    jumpers = config.get("jumpers", DEFAULT_JUMPERS)
+    if not isinstance(jumpers, list) or len(jumpers) > MAX_JUMPERS:
+        raise ValueError(f"計測器設定JSONのjumpersは{MAX_JUMPERS}件以内の配列にしてください。")
+    jumper_names = set()
+    for jumper in jumpers:
+        if (
+            not isinstance(jumper, dict)
+            or jumper.keys() != {"name", "setting"}
+            or not isinstance(jumper["name"], str)
+            or not jumper["name"].strip()
+            or jumper["name"] != jumper["name"].strip()
+            or len(jumper["name"]) > 100
+            or jumper["name"] in jumper_names
+            or not isinstance(jumper["setting"], str)
+            or not jumper["setting"].strip()
+            or jumper["setting"] != jumper["setting"].strip()
+            or len(jumper["setting"]) > 100
+        ):
+            raise ValueError(
+                f"jumpersには重複しないnameとsettingを指定してください（各100文字以内、最大{MAX_JUMPERS}件）。"
+            )
+        jumper_names.add(jumper["name"])
     return {
         "managerChoices": manager_choices,
         "instrumentChoices": choices,
         "boards": boards,
+        "jumpers": jumpers,
     }
 
 
@@ -253,6 +281,7 @@ def create_app(test_config=None):
     app.config["INSTRUMENT_CHOICES"] = equipment_config["instrumentChoices"]
     app.config["MANAGER_CHOICES"] = equipment_config["managerChoices"]
     app.config["BOARD_DEFAULTS"] = equipment_config["boards"]
+    app.config["JUMPERS"] = equipment_config["jumpers"]
 
     # SQLite への接続を共通化する。
     # DB ファイルが存在しないときはフォルダを自動作成する。
@@ -299,7 +328,8 @@ def create_app(test_config=None):
                 CREATE INDEX IF NOT EXISTS records_manager_idx ON records(manager);
                 CREATE TABLE IF NOT EXISTS jumper_checks (
                     record_id INTEGER NOT NULL REFERENCES records(id) ON DELETE CASCADE,
-                    jumper_name TEXT NOT NULL CHECK (jumper_name IN ('W1', 'W2')),
+                    jumper_name TEXT NOT NULL,
+                    setting TEXT NOT NULL,
                     confirmed INTEGER NOT NULL CHECK (confirmed IN (0, 1)),
                     PRIMARY KEY (record_id, jumper_name)
                 );
@@ -309,6 +339,44 @@ def create_app(test_config=None):
                 );
                 """
             )
+            jumper_table = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'jumper_checks'"
+            ).fetchone()
+            jumper_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(jumper_checks)")
+            }
+            schema_sql = " ".join((jumper_table["sql"] or "").lower().split())
+            has_fixed_jumper_check = "check (jumper_name in ('w1', 'w2'))" in schema_sql
+            if "setting" not in jumper_columns or has_fixed_jumper_check:
+                connection.execute("ALTER TABLE jumper_checks RENAME TO jumper_checks_legacy")
+                connection.execute(
+                    """
+                    CREATE TABLE jumper_checks (
+                        record_id INTEGER NOT NULL REFERENCES records(id) ON DELETE CASCADE,
+                        jumper_name TEXT NOT NULL,
+                        setting TEXT NOT NULL,
+                        confirmed INTEGER NOT NULL CHECK (confirmed IN (0, 1)),
+                        PRIMARY KEY (record_id, jumper_name)
+                    )
+                    """
+                )
+                if "setting" in jumper_columns:
+                    connection.execute(
+                        """
+                        INSERT INTO jumper_checks (record_id, jumper_name, setting, confirmed)
+                        SELECT record_id, jumper_name, setting, confirmed
+                        FROM jumper_checks_legacy
+                        """
+                    )
+                else:
+                    connection.execute(
+                        """
+                        INSERT INTO jumper_checks (record_id, jumper_name, setting, confirmed)
+                        SELECT record_id, jumper_name, '1-2', confirmed
+                        FROM jumper_checks_legacy
+                        """
+                    )
+                connection.execute("DROP TABLE jumper_checks_legacy")
             # 既存DBの単一添付ファイルを新しい複数ファイル用テーブルへ移す。
             connection.execute(
                 """
@@ -789,20 +857,30 @@ def create_app(test_config=None):
             ).fetchone():
                 abort(404)
             rows = connection.execute(
-                "SELECT jumper_name, confirmed FROM jumper_checks WHERE record_id = ?",
+                "SELECT jumper_name, setting, confirmed FROM jumper_checks WHERE record_id = ?",
                 (record_id,),
             ).fetchall()
-        confirmed = {row["jumper_name"]: bool(row["confirmed"]) for row in rows}
+        saved = {row["jumper_name"]: row for row in rows}
         return jsonify([
-            {"name": name, "setting": "1-2", "confirmed": confirmed.get(name, False)}
-            for name in ("W1", "W2")
+            {
+                **jumper,
+                "confirmed": bool(saved[jumper["name"]]["confirmed"])
+                if jumper["name"] in saved
+                and saved[jumper["name"]]["setting"] == jumper["setting"]
+                else False,
+            }
+            for jumper in app.config["JUMPERS"]
         ])
 
     @app.put("/api/records/<int:record_id>/jumpers/<jumper_name>")
     @require_login
     @require_csrf
     def update_jumper_check(record_id, jumper_name):
-        if jumper_name not in {"W1", "W2"}:
+        jumper = next(
+            (item for item in app.config["JUMPERS"] if item["name"] == jumper_name),
+            None,
+        )
+        if jumper is None:
             abort(404)
         data = request.get_json(silent=True)
         if not isinstance(data, dict) or not isinstance(data.get("confirmed"), bool):
@@ -814,14 +892,14 @@ def create_app(test_config=None):
                 abort(404)
             connection.execute(
                 """
-                INSERT INTO jumper_checks (record_id, jumper_name, confirmed)
-                VALUES (?, ?, ?)
+                INSERT INTO jumper_checks (record_id, jumper_name, setting, confirmed)
+                VALUES (?, ?, ?, ?)
                 ON CONFLICT(record_id, jumper_name)
-                DO UPDATE SET confirmed = excluded.confirmed
+                DO UPDATE SET setting = excluded.setting, confirmed = excluded.confirmed
                 """,
-                (record_id, jumper_name, int(data["confirmed"])),
+                (record_id, jumper_name, jumper["setting"], int(data["confirmed"])),
             )
-        return jsonify(name=jumper_name, setting="1-2", confirmed=data["confirmed"])
+        return jsonify(**jumper, confirmed=data["confirmed"])
 
     @app.route("/api/records/<int:record_id>/equipment", methods=["GET", "PUT"])
     @require_login
@@ -894,12 +972,13 @@ def create_app(test_config=None):
             if error:
                 return jsonify(error=error), 400
             equipment = normalize_equipment(equipment, app.config["BOARD_DEFAULTS"])
+            jumper_names = {jumper["name"] for jumper in app.config["JUMPERS"]}
             if (
                 not isinstance(jumper_checks, dict)
-                or set(jumper_checks) != {"W1", "W2"}
+                or set(jumper_checks) != jumper_names
                 or any(not isinstance(value, bool) for value in jumper_checks.values())
             ):
-                return jsonify(error="ジャンパ確認はW1・W2の真偽値で指定してください。"), 400
+                return jsonify(error="ジャンパ確認は設定済みジャンパの真偽値で指定してください。"), 400
 
         raw_remove_ids = request.form.getlist("removeFileIds")
         try:
@@ -973,12 +1052,20 @@ def create_app(test_config=None):
                 )
                 connection.executemany(
                     """
-                    INSERT INTO jumper_checks (record_id, jumper_name, confirmed)
-                    VALUES (?, ?, ?)
+                    INSERT INTO jumper_checks (record_id, jumper_name, setting, confirmed)
+                    VALUES (?, ?, ?, ?)
                     ON CONFLICT(record_id, jumper_name)
-                    DO UPDATE SET confirmed = excluded.confirmed
+                    DO UPDATE SET setting = excluded.setting, confirmed = excluded.confirmed
                     """,
-                    [(record_id, name, int(confirmed)) for name, confirmed in jumper_checks.items()],
+                    [
+                        (
+                            record_id,
+                            jumper["name"],
+                            jumper["setting"],
+                            int(jumper_checks[jumper["name"]]),
+                        )
+                        for jumper in app.config["JUMPERS"]
+                    ],
                 )
                 saved_files = [
                     {"id": row["id"], "fileName": row["file_name"]}

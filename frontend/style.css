@@ -1375,7 +1375,7 @@ tbody tr:last-child td {
 
 .csv-filters {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(120px, 180px);
+  grid-template-columns: minmax(0, 12.5%) minmax(120px, 180px);
   gap: 14px;
   margin-bottom: 16px;
 }
@@ -1397,9 +1397,10 @@ tbody tr:last-child td {
   min-width: 1690px;
 }
 
-.csv-no-column { width: 120px; }
+.csv-no-column { width: 96px; }
 .csv-name-column { width: 320px; }
 .csv-value-column { width: 90px; }
+.csv-unit-column { width: 72px; }
 .csv-judgement-column { width: 70px; }
 
 .trial-results-table th,
@@ -1407,6 +1408,7 @@ tbody tr:last-child td {
   padding: 9px 10px;
   background: #fff;
   font-variant-numeric: tabular-nums;
+  border-right: 1px solid #dfe6e9;
 }
 
 .trial-results-table thead th {
@@ -1416,6 +1418,21 @@ tbody tr:last-child td {
   height: 38px;
   background: #e5eff3;
   color: #294b58;
+}
+
+.csv-column-resize-handle {
+  position: absolute;
+  top: 0;
+  right: -4px;
+  bottom: 0;
+  z-index: 5;
+  width: 8px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.csv-column-resize-handle:hover {
+  background: rgba(41, 75, 88, 0.12);
 }
 
 .trial-results-table thead tr:nth-child(2) th {
@@ -1641,7 +1658,7 @@ tbody tr:last-child td {
 }
 
 .jumper-table-wrap {
-  width: 16%;
+  width: 18%;
   min-width: 0;
   max-width: 100%;
   margin-bottom: 16px;
@@ -1654,9 +1671,9 @@ tbody tr:last-child td {
   padding-left: 4px;
 }
 
-.jumper-table th:first-child { width: 50%; }
-.jumper-table th:nth-child(2),
-.jumper-table th:nth-child(3) { width: 25%; }
+.jumper-table th:first-child { width: 44.5%; }
+.jumper-table th:nth-child(2) { width: 33.3%; }
+.jumper-table th:nth-child(3) { width: 22.2%; }
 
 .jumper-table td {
   height: 37px;

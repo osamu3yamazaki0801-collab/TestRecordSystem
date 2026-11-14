@@ -53,6 +53,14 @@ class TrialResultsCsvTests(unittest.TestCase):
         self.assertEqual(result["sections"][0]["rows"][0]["judgement"], "FAIL")
         self.assertEqual(result["sections"][0]["summary"]["FAIL"], 1)
 
+    def test_csv_ng_judgements_are_searchable_as_failures(self):
+        content = SAMPLE_RESULTS_CSV.replace("-0.01,PASS", "-0.01,NG", 1)
+        result = parse_trial_results(content.encode("utf-8"))
+        row = result["sections"][0]["rows"][0]
+        self.assertEqual(row["measurements"][0]["minJudgement"], "NG")
+        self.assertEqual(row["judgement"], "FAIL")
+        self.assertEqual(result["sections"][0]["summary"]["FAIL"], 1)
+
     def test_csv_rejects_invalid_structure(self):
         for text in (
             "品名,サンプル\n", "not csv", SAMPLE_RESULTS_CSV.replace("No.,試験名称", "No.,その他", 1),
@@ -68,6 +76,16 @@ class TrialResultsCsvTests(unittest.TestCase):
 class LedgerAppTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
+        equipment_config_path = Path(self.temp_dir.name) / "equipment-config.json"
+        equipment_config_path.write_text(
+            json.dumps({
+                "jumpers": [
+                    {"name": "W1", "setting": "1-2"},
+                    {"name": "W2", "setting": "1-2"},
+                ],
+            }),
+            encoding="utf-8",
+        )
         self.app = create_app(
             {
                 "TESTING": True,
@@ -75,6 +93,7 @@ class LedgerAppTests(unittest.TestCase):
                 "LEDGER_USERNAME": "operator",
                 "LEDGER_PASSWORD_HASH": generate_password_hash("correct horse battery"),
                 "DATABASE_PATH": str(Path(self.temp_dir.name) / "ledger.sqlite3"),
+                "EQUIPMENT_CONFIG_PATH": str(equipment_config_path),
                 "SESSION_COOKIE_SECURE": False,
             }
         )
@@ -401,6 +420,142 @@ class LedgerAppTests(unittest.TestCase):
         with closing(sqlite3.connect(self.app.config["DATABASE_PATH"])) as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM jumper_checks").fetchone()[0], 0)
 
+    def test_jumper_config_controls_rows_and_setting_changes_reset_confirmation(self):
+        self.login()
+        record_id = self.client.post(
+            "/api/records", data=self.record_data(),
+            headers={"X-CSRF-Token": self.csrf_token},
+        ).json["id"]
+        config_path = Path(self.temp_dir.name) / "custom-jumpers.json"
+        jumpers = [
+            {"name": "JP-1", "setting": "2-3"},
+            {"name": "BOOT", "setting": "OPEN"},
+            {"name": "MODE", "setting": "LOW"},
+        ]
+        config_path.write_text(json.dumps({"jumpers": jumpers}), encoding="utf-8")
+        configured_app = create_app({
+            "TESTING": True,
+            "SECRET_KEY": "test-secret-key",
+            "LEDGER_USERNAME": "operator",
+            "LEDGER_PASSWORD_HASH": generate_password_hash("correct horse battery"),
+            "DATABASE_PATH": self.app.config["DATABASE_PATH"],
+            "EQUIPMENT_CONFIG_PATH": str(config_path),
+            "SESSION_COOKIE_SECURE": False,
+        })
+        configured_client = configured_app.test_client()
+        with configured_client.session_transaction() as session:
+            session["username"] = "operator"
+        configured_csrf_token = configured_client.get("/api/session").json["csrfToken"]
+
+        url = f"/api/records/{record_id}/jumpers"
+        checks = configured_client.get(url).json
+        self.assertEqual(
+            checks,
+            [{**jumper, "confirmed": False} for jumper in jumpers],
+        )
+        response = configured_client.put(
+            f"{url}/JP-1", json={"confirmed": True},
+            headers={"X-CSRF-Token": configured_csrf_token},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json, {**jumpers[0], "confirmed": True})
+        equipment = configured_client.get(f"/api/records/{record_id}/equipment").json
+        details_response = configured_client.put(
+            f"/api/records/{record_id}/details",
+            data=self.record_data(
+                equipment=json.dumps(equipment),
+                jumperChecks=json.dumps({
+                    "JP-1": True,
+                    "BOOT": False,
+                    "MODE": False,
+                }),
+            ),
+            headers={"X-CSRF-Token": configured_csrf_token},
+        )
+        self.assertEqual(details_response.status_code, 200, details_response.json)
+
+        changed_jumpers = [dict(jumpers[0], setting="3-4")]
+        config_path.write_text(json.dumps({"jumpers": changed_jumpers}), encoding="utf-8")
+        changed_app = create_app({
+            **dict(self.app.config),
+            "EQUIPMENT_CONFIG_PATH": str(config_path),
+        }).test_client()
+        with changed_app.session_transaction() as session:
+            session["username"] = "operator"
+        self.assertEqual(
+            changed_app.get(url).json,
+            [{**changed_jumpers[0], "confirmed": False}],
+        )
+
+    def test_legacy_jumper_table_migrates_without_losing_confirmation(self):
+        self.login()
+        record_id = self.client.post(
+            "/api/records", data=self.record_data(),
+            headers={"X-CSRF-Token": self.csrf_token},
+        ).json["id"]
+        with closing(sqlite3.connect(self.app.config["DATABASE_PATH"])) as connection:
+            connection.execute("DROP TABLE jumper_checks")
+            connection.execute(
+                """
+                CREATE TABLE jumper_checks (
+                    record_id INTEGER NOT NULL REFERENCES records(id) ON DELETE CASCADE,
+                    jumper_name TEXT NOT NULL CHECK (jumper_name IN ('W1', 'W2')),
+                    confirmed INTEGER NOT NULL CHECK (confirmed IN (0, 1)),
+                    PRIMARY KEY (record_id, jumper_name)
+                )
+                """
+            )
+            connection.executemany(
+                "INSERT INTO jumper_checks (record_id, jumper_name, confirmed) VALUES (?, ?, ?)",
+                [(record_id, "W1", 1), (record_id, "W2", 0)],
+            )
+            connection.commit()
+
+        migrated_client = create_app(dict(self.app.config)).test_client()
+        with migrated_client.session_transaction() as session:
+            session["username"] = "operator"
+        self.assertEqual(
+            migrated_client.get(f"/api/records/{record_id}/jumpers").json,
+            [
+                {"name": "W1", "setting": "1-2", "confirmed": True},
+                {"name": "W2", "setting": "1-2", "confirmed": False},
+            ],
+        )
+        with closing(sqlite3.connect(self.app.config["DATABASE_PATH"])) as connection:
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(jumper_checks)")}
+            schema = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'jumper_checks'"
+            ).fetchone()[0]
+        self.assertIn("setting", columns)
+        self.assertNotIn("W1', 'W2", schema)
+
+    def test_empty_jumper_config_returns_no_rows_and_saves_empty_checks(self):
+        self.login()
+        record_id = self.client.post(
+            "/api/records", data=self.record_data(),
+            headers={"X-CSRF-Token": self.csrf_token},
+        ).json["id"]
+        config_path = Path(self.temp_dir.name) / "no-jumpers.json"
+        config_path.write_text(json.dumps({"jumpers": []}), encoding="utf-8")
+        configured_client = create_app({
+            **dict(self.app.config),
+            "EQUIPMENT_CONFIG_PATH": str(config_path),
+        }).test_client()
+        with configured_client.session_transaction() as session:
+            session["username"] = "operator"
+        configured_csrf_token = configured_client.get("/api/session").json["csrfToken"]
+        self.assertEqual(configured_client.get(f"/api/records/{record_id}/jumpers").json, [])
+        equipment = configured_client.get(f"/api/records/{record_id}/equipment").json
+        response = configured_client.put(
+            f"/api/records/{record_id}/details",
+            data=self.record_data(
+                equipment=json.dumps(equipment),
+                jumperChecks=json.dumps({}),
+            ),
+            headers={"X-CSRF-Token": configured_csrf_token},
+        )
+        self.assertEqual(response.status_code, 200, response.json)
+
     def test_jumper_checks_require_login_csrf_and_valid_input(self):
         self.assertEqual(self.client.get("/api/records/1/jumpers").status_code, 401)
         self.assertEqual(self.client.put("/api/records/1/jumpers/W1", json={"confirmed": True}).status_code, 401)
@@ -567,6 +722,26 @@ class LedgerAppTests(unittest.TestCase):
                 "EQUIPMENT_CONFIG_PATH": str(config_path),
                 "DATABASE_PATH": str(Path(self.temp_dir.name) / "too-many-boards.sqlite3"),
             })
+
+    def test_equipment_config_rejects_invalid_jumpers(self):
+        config_path = Path(self.temp_dir.name) / "invalid-jumpers.json"
+        invalid_configs = (
+            [{"name": "J1", "setting": "1-2"}, {"name": "J1", "setting": "2-3"}],
+            [{"name": "J1", "setting": ""}],
+            [{"name": "J1"}],
+            [{"name": f"J{index}", "setting": "1-2"} for index in range(51)],
+        )
+        for jumpers in invalid_configs:
+            with self.subTest(jumpers=jumpers):
+                config_path.write_text(
+                    json.dumps({"jumpers": jumpers}), encoding="utf-8",
+                )
+                with self.assertRaisesRegex(ValueError, "jumpers"):
+                    create_app({
+                        "TESTING": True,
+                        "EQUIPMENT_CONFIG_PATH": str(config_path),
+                        "DATABASE_PATH": str(Path(self.temp_dir.name) / "invalid-jumpers.sqlite3"),
+                    })
 
     def test_equipment_config_rejects_invalid_choices(self):
         config_path = Path(self.temp_dir.name) / "invalid-equipment-config.json"

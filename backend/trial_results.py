@@ -89,7 +89,12 @@ def parse_trial_results(content):
                 else:
                     result["measurements"].append({"value": row[offset], "judgement": row[offset + 1]})
                     judgements.append(row[offset + 1].upper())
-            result["judgement"] = "FAIL" if "FAIL" in judgements else "PASS" if all(value == "PASS" for value in judgements) else "UNJUDGED"
+            if any(value in {"FAIL", "NG"} for value in judgements):
+                result["judgement"] = "FAIL"
+            elif all(value == "PASS" for value in judgements):
+                result["judgement"] = "PASS"
+            else:
+                result["judgement"] = "UNJUDGED"
             current["rows"].append(result)
     except csv.Error as error:
         raise ValueError("CSVの引用符またはセルの長さが正しくありません。") from error

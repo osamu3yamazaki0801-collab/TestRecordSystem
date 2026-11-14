@@ -478,6 +478,19 @@ button {
   border-bottom: 1px solid var(--border);
 }
 
+.record-search-header {
+  border-bottom: 2px solid #aeb8b1;
+}
+
+.record-search-new-button {
+  margin-top: 16px;
+}
+
+.record-search-title {
+  margin: 0 0 16px;
+  font-size: 1.2rem;
+}
+
 .eyebrow,
 .card-kicker {
   margin: 0;

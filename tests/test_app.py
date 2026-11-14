@@ -212,7 +212,11 @@ class LedgerAppTests(unittest.TestCase):
         self.login()
         response = self.client.post(
             "/api/records",
-            data={"trialNo": "T-MINIMAL", "manager": "山田太郎"},
+            data={
+                "trialNo": "T-MINIMAL",
+                "registrationDate": date.today().strftime("%Y%m%d"),
+                "manager": "山田太郎",
+            },
             headers={"X-CSRF-Token": self.csrf_token},
         )
         self.assertEqual(response.status_code, 201)
@@ -251,6 +255,7 @@ class LedgerAppTests(unittest.TestCase):
         self.login()
         for data in (
             {"trialNo": "", "manager": "山田太郎"},
+            {"trialNo": "T-MINIMAL", "manager": "山田太郎"},
             {"trialNo": "試験番号", "manager": "山田太郎"},
             {"trialNo": "T-MINIMAL", "manager": ""},
             {"trialNo": "T-MINIMAL", "manager": "operator"},

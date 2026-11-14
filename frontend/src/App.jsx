@@ -16,8 +16,8 @@ const SECTION_DETAILS = {
     description: '制御ユニットのルーチン試験結果を登録・参照します。',
   },
   searchSection: {
-    title: '記録の登録・検索',
-    description: '試験記録を登録し、条件で検索します。',
+    title: '記録の登録',
+    description: '試験記録を新規登録、または登録済みの記録を検索できます。',
   },
 };
 const EMPTY_FILTERS = {
@@ -672,7 +672,7 @@ function App() {
 
         <nav className="side-nav" aria-label="メインメニュー">
           <NavLink target="dashboardSection" section={section} onNavigate={navigateTo} icon="⌂">概要</NavLink>
-          <NavLink target="searchSection" section={section} onNavigate={navigateTo} icon="⌕">記録の登録・検索</NavLink>
+          <NavLink target="searchSection" section={section} onNavigate={navigateTo} icon="⌕">記録の登録</NavLink>
         </nav>
 
         <div className="sidebar-bottom">
@@ -693,17 +693,17 @@ function App() {
       </aside>
 
       <main className="main-area">
-        <header className="page-header">
+        <header className={`page-header${section === 'searchSection' ? ' record-search-header' : ''}`}>
           <div>
             <p className="eyebrow"><span className="eyebrow-dash" aria-hidden="true"></span> TRIAL LEDGER</p>
             <h1>{pageTitle}</h1>
             <p>{pageDescription}</p>
+            {section === 'searchSection' && (
+              <button type="button" className="primary-button record-search-new-button" onClick={openNewRecord}>新規登録</button>
+            )}
           </div>
           <div className="page-header-actions">
             <span className="system-status"><span className="status-dot" aria-hidden="true"></span>システム稼働中</span>
-            {section === 'searchSection' && (
-              <button type="button" className="primary-button" onClick={openNewRecord}>新規登録</button>
-            )}
           </div>
         </header>
         {sessionMessage && <Message type="error">{sessionMessage}</Message>}
@@ -716,7 +716,7 @@ function App() {
                 <h2>試験記録を<br />かんたんに管理</h2>
                 <p>試験結果と関連情報を登録し、必要な記録をすぐに検索できます。</p>
                 <div className="welcome-actions">
-                  <button type="button" className="outline-button" onClick={() => navigateTo('searchSection')}>記録の登録・検索</button>
+                  <button type="button" className="outline-button" onClick={() => navigateTo('searchSection')}>記録の登録</button>
                 </div>
                 <span className="welcome-orbit" aria-hidden="true"></span>
               </article>
@@ -764,7 +764,7 @@ function App() {
                 <div className="quick-links">
                   <button type="button" className="quick-link" onClick={() => navigateTo('searchSection')}>
                     <span className="quick-icon search-icon" aria-hidden="true">⌕</span>
-                    <span className="quick-copy"><strong>記録の登録・検索</strong><small>登録済みの記録を確認</small></span>
+                    <span className="quick-copy"><strong>記録の登録</strong><small>登録・検索画面を開く</small></span>
                     <span className="quick-arrow" aria-hidden="true">›</span>
                   </button>
                 </div>
@@ -775,6 +775,7 @@ function App() {
 
         {section === 'searchSection' && (
           <section className="page-section active">
+            <h2 className="record-search-title">記録の検索</h2>
             <div className="search-panel">
               <div className="search-grid">
                 <SearchField label="試験番号" name="trialNo" value={searchFilters.trialNo} onChange={setSearchFilters} placeholder="試験番号" maxLength={20} />
@@ -897,13 +898,9 @@ function RegistrationForm({ registerForm, handleRegister, registrationValues, se
       <fieldset className="record-form-fields" disabled={registering}>
         <div className="form-grid">
           <label className="field"><span>試験番号</span><input name="trialNo" type="text" maxLength="20" placeholder="例: T-001" value={registrationValues.trialNo} onChange={(event) => setRegistrationValues((values) => ({ ...values, trialNo: event.target.value }))} required /></label>
-          {editingRecordId !== null && (
-            <>
-              <label className="field"><span>案件名</span><input name="projectName" type="text" maxLength="30" placeholder="例: X製品試験" value={registrationValues.projectName} onChange={(event) => setRegistrationValues((values) => ({ ...values, projectName: event.target.value }))} /></label>
-              <label className="field"><span>製番</span><input name="productNo" type="text" maxLength="30" placeholder="例: A 12345" value={registrationValues.productNo} onChange={(event) => setRegistrationValues((values) => ({ ...values, productNo: event.target.value }))} /></label>
-              <label className="field"><span>登録日</span><input name="registrationDate" type="text" maxLength="8" value={registrationValues.registrationDate} onChange={(event) => setRegistrationValues((values) => ({ ...values, registrationDate: event.target.value }))} placeholder="yyyymmdd" required /></label>
-            </>
-          )}
+          <label className="field"><span>案件名</span><input name="projectName" type="text" maxLength="30" placeholder="例: X製品試験" value={registrationValues.projectName} onChange={(event) => setRegistrationValues((values) => ({ ...values, projectName: event.target.value }))} /></label>
+          <label className="field"><span>製番</span><input name="productNo" type="text" maxLength="30" placeholder="例: A 12345" value={registrationValues.productNo} onChange={(event) => setRegistrationValues((values) => ({ ...values, productNo: event.target.value }))} /></label>
+          <label className="field"><span>登録日</span><input name="registrationDate" type="text" maxLength="8" value={registrationValues.registrationDate} onChange={(event) => setRegistrationValues((values) => ({ ...values, registrationDate: event.target.value }))} placeholder="yyyymmdd" required /></label>
           <label className="field"><span>担当者</span><input name="manager" type="text" maxLength="30" placeholder="例: 山田太郎" value={registrationValues.manager} onChange={(event) => setRegistrationValues((values) => ({ ...values, manager: event.target.value }))} required /></label>
         </div>
         {editingRecordId === null && (

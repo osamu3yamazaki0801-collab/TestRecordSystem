@@ -625,7 +625,6 @@ def create_app(test_config=None):
 
         uploads = request.files.getlist("resultFiles") or request.files.getlist("resultFile")
         form = request.form.copy()
-        form.setdefault("registrationDate", date.today().strftime("%Y%m%d"))
         values, registration_date, files, error = parse_record_submission(
             form,
             uploads,

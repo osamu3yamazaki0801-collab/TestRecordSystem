@@ -414,12 +414,18 @@ class LedgerAppTests(unittest.TestCase):
         ).json["id"]
         config_path = Path(self.temp_dir.name) / "equipment-config.json"
         choices = [{"name": "カスタム試験器", "managementNo": "CUSTOM-01"}]
+        managers = ["カスタム担当者", "別の担当者"]
         boards = [
             {"name": f"CUSTOM-{index}", "revision": "R1", "nega": "N1", "serialNumber": "SERIAL"}
             for index in range(3)
         ]
         config_path.write_text(
-            json.dumps({"instrumentChoices": choices, "boards": boards}), encoding="utf-8",
+            json.dumps({
+                "managerChoices": managers,
+                "instrumentChoices": choices,
+                "boards": boards,
+            }),
+            encoding="utf-8",
         )
         configured_app = create_app({
             "TESTING": True,
@@ -436,11 +442,25 @@ class LedgerAppTests(unittest.TestCase):
 
         self.assertEqual(
             configured_client.get("/api/equipment-config").json,
-            {"instrumentChoices": choices},
+            {"instrumentChoices": choices, "managerChoices": managers},
         )
         equipment = configured_client.get(f"/api/records/{record_id}/equipment").json
         self.assertEqual(len(equipment["instruments"]), 5)
         self.assertEqual(equipment["boards"], boards)
+
+    def test_equipment_config_rejects_invalid_manager_choices(self):
+        config_path = Path(self.temp_dir.name) / "invalid-manager-choices.json"
+        for managers in (["担当者", "担当者"], ["operator"], ["名" * 31]):
+            with self.subTest(managers=managers):
+                config_path.write_text(
+                    json.dumps({"managerChoices": managers}), encoding="utf-8",
+                )
+                with self.assertRaisesRegex(ValueError, "managerChoices"):
+                    create_app({
+                        "TESTING": True,
+                        "EQUIPMENT_CONFIG_PATH": str(config_path),
+                        "DATABASE_PATH": str(Path(self.temp_dir.name) / "invalid-managers.sqlite3"),
+                    })
 
     def test_equipment_config_rejects_more_than_fifty_boards(self):
         config_path = Path(self.temp_dir.name) / "too-many-boards.json"

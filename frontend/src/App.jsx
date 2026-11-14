@@ -144,6 +144,7 @@ function App() {
   const [detailRecord, setDetailRecord] = useState(null);
   const [detailEquipment, setDetailEquipment] = useState(null);
   const [instrumentChoices, setInstrumentChoices] = useState([]);
+  const [managerChoices, setManagerChoices] = useState(null);
   const [detailJumpers, setDetailJumpers] = useState(null);
   const savedDetails = useRef({ equipment: null, jumpers: null });
   const [detailMessage, setDetailMessage] = useState({ text: '', type: '' });
@@ -167,6 +168,25 @@ function App() {
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!authenticated || detailRecordId !== null) return undefined;
+    let active = true;
+    apiRequest('/api/equipment-config', csrfToken.current).then((config) => {
+      if (!active) return;
+      setManagerChoices(config.managerChoices);
+    }).catch((error) => {
+      if (!active) return;
+      setManagerChoices([]);
+      setRegisterMessage({ text: error.message, type: 'error' });
+      if (error instanceof ApiError && error.status === 401) {
+        csrfToken.current = '';
+        setAuthenticated(false);
+        setLoginError(error.message);
+      }
+    });
+    return () => { active = false; };
+  }, [authenticated, detailRecordId]);
 
   useEffect(() => {
     if (!authenticated || detailRecordId !== null || section !== 'dashboardSection') return undefined;
@@ -241,6 +261,7 @@ function App() {
       handleEditRecord(record);
       setDetailEquipment(equipment);
       setInstrumentChoices(config.instrumentChoices);
+      setManagerChoices(config.managerChoices);
       setDetailJumpers(jumpers);
       savedDetails.current = { equipment, jumpers };
       setDetailMessage({ text: '', type: '' });
@@ -613,6 +634,7 @@ function App() {
       handleRegister={handleRegister}
       registrationValues={registrationValues}
       setRegistrationValues={setRegistrationValues}
+      managerChoices={managerChoices}
       editingRecordId={editingRecordId}
       registering={registering}
       cancelRegister={cancelRegister}
@@ -892,16 +914,27 @@ function NewRecordDialog({ children, onClose, registering }) {
   );
 }
 
-function RegistrationForm({ registerForm, handleRegister, registrationValues, setRegistrationValues, editingRecordId, registering, cancelRegister, registerMessage, onChange }) {
+function RegistrationForm({ registerForm, handleRegister, registrationValues, setRegistrationValues, managerChoices, editingRecordId, registering, cancelRegister, registerMessage, onChange }) {
+  const availableManagers = managerChoices || [];
+  const managerOptions = registrationValues.manager && !availableManagers.includes(registrationValues.manager)
+    ? [registrationValues.manager, ...availableManagers]
+    : availableManagers;
   return (
     <form id={editingRecordId !== null ? 'record-edit-form' : undefined} ref={registerForm} className="form-panel" onSubmit={handleRegister} onChange={onChange}>
       <fieldset className="record-form-fields" disabled={registering}>
         <div className="form-grid">
-          <label className="field"><span>試験番号</span><input name="trialNo" type="text" maxLength="20" placeholder="例: T-001" value={registrationValues.trialNo} onChange={(event) => setRegistrationValues((values) => ({ ...values, trialNo: event.target.value }))} required /></label>
-          <label className="field"><span>案件名</span><input name="projectName" type="text" maxLength="30" placeholder="例: X製品試験" value={registrationValues.projectName} onChange={(event) => setRegistrationValues((values) => ({ ...values, projectName: event.target.value }))} /></label>
-          <label className="field"><span>製番</span><input name="productNo" type="text" maxLength="30" placeholder="例: A 12345" value={registrationValues.productNo} onChange={(event) => setRegistrationValues((values) => ({ ...values, productNo: event.target.value }))} /></label>
+          <label className="field"><span>試験番号</span><input name="trialNo" type="text" maxLength="20" placeholder="例: 1234567890" value={registrationValues.trialNo} onChange={(event) => setRegistrationValues((values) => ({ ...values, trialNo: event.target.value }))} required /></label>
+          <label className="field"><span>案件名</span><input name="projectName" type="text" maxLength="30" placeholder="例: JR東海N700S CI" value={registrationValues.projectName} onChange={(event) => setRegistrationValues((values) => ({ ...values, projectName: event.target.value }))} /></label>
+          <label className="field"><span>製番</span><input name="productNo" type="text" maxLength="30" placeholder="例: 12345678 DG 0001" value={registrationValues.productNo} onChange={(event) => setRegistrationValues((values) => ({ ...values, productNo: event.target.value }))} /></label>
           <label className="field"><span>登録日</span><input name="registrationDate" type="text" maxLength="8" value={registrationValues.registrationDate} onChange={(event) => setRegistrationValues((values) => ({ ...values, registrationDate: event.target.value }))} placeholder="yyyymmdd" required /></label>
-          <label className="field"><span>担当者</span><input name="manager" type="text" maxLength="30" placeholder="例: 山田太郎" value={registrationValues.manager} onChange={(event) => setRegistrationValues((values) => ({ ...values, manager: event.target.value }))} required /></label>
+          <label className="field">
+            <span>担当者</span>
+            <select name="manager" value={registrationValues.manager} onChange={(event) => setRegistrationValues((values) => ({ ...values, manager: event.target.value }))} required disabled={managerChoices === null}>
+              <option value="" disabled>{managerChoices === null ? '読み込み中...' : managerOptions.length ? '担当者を選択' : '候補がありません'}</option>
+              {managerOptions.map((manager) => <option key={manager} value={manager}>{manager}</option>)}
+            </select>
+            {managerChoices?.length === 0 && <small className="field-help">equipment-config.json の managerChoices に担当者名を設定してください。</small>}
+          </label>
         </div>
         {editingRecordId === null && (
           <div className="button-row">

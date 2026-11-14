@@ -26,6 +26,7 @@ MAX_REQUEST_SIZE = MAX_TOTAL_FILE_SIZE + 2 * 1024 * 1024
 DEFAULT_INSTRUMENT_ROWS = 5
 MAX_INSTRUMENT_ROWS = 50
 MAX_INSTRUMENT_CHOICES = 50
+MAX_MANAGER_CHOICES = 100
 DEFAULT_BOARD_DEFAULTS = [
     {"name": name, "revision": "", "nega": "", "serialNumber": ""}
     for name in (
@@ -51,6 +52,24 @@ def load_equipment_config(config_path):
 
     if not isinstance(config, dict):
         raise ValueError("機器設定JSONのルートはオブジェクトにしてください。")
+    manager_choices = config.get("managerChoices", [])
+    if not isinstance(manager_choices, list) or len(manager_choices) > MAX_MANAGER_CHOICES:
+        raise ValueError(
+            f"計測器設定JSONのmanagerChoicesは{MAX_MANAGER_CHOICES}件以内の配列にしてください。"
+        )
+    manager_names = set()
+    for manager in manager_choices:
+        if (
+            not isinstance(manager, str)
+            or len(manager) > 30
+            or manager != manager.strip()
+            or not is_japanese_text(manager)
+            or manager in manager_names
+        ):
+            raise ValueError(
+                "managerChoicesには重複しない日本語の担当者名を30文字以内で指定してください。"
+            )
+        manager_names.add(manager)
     choices = config.get("instrumentChoices", DEFAULT_INSTRUMENT_CHOICES)
     if not isinstance(choices, list) or len(choices) > MAX_INSTRUMENT_CHOICES:
         raise ValueError(
@@ -98,7 +117,11 @@ def load_equipment_config(config_path):
                 "各boards項目には一意なname、revision、nega、serialNumberを設定してください。"
             )
         board_names.add(board["name"])
-    return {"instrumentChoices": choices, "boards": boards}
+    return {
+        "managerChoices": manager_choices,
+        "instrumentChoices": choices,
+        "boards": boards,
+    }
 
 
 def empty_equipment(board_defaults=DEFAULT_BOARD_DEFAULTS):
@@ -228,6 +251,7 @@ def create_app(test_config=None):
         app.config["EQUIPMENT_CONFIG_PATH"]
     )
     app.config["INSTRUMENT_CHOICES"] = equipment_config["instrumentChoices"]
+    app.config["MANAGER_CHOICES"] = equipment_config["managerChoices"]
     app.config["BOARD_DEFAULTS"] = equipment_config["boards"]
 
     # SQLite への接続を共通化する。
@@ -738,7 +762,10 @@ def create_app(test_config=None):
     @app.get("/api/equipment-config")
     @require_login
     def get_equipment_config():
-        return jsonify(instrumentChoices=app.config["INSTRUMENT_CHOICES"])
+        return jsonify(
+            instrumentChoices=app.config["INSTRUMENT_CHOICES"],
+            managerChoices=app.config["MANAGER_CHOICES"],
+        )
 
     @app.put("/api/records/<int:record_id>/details")
     @app.put("/api/records/<int:record_id>")

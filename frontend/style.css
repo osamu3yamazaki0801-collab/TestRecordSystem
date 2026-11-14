@@ -156,7 +156,8 @@ button {
   opacity: 0.65;
 }
 
-.field input {
+.field input,
+.field select {
   width: 100%;
   min-height: 44px;
   padding: 10px 12px;
@@ -167,7 +168,8 @@ button {
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
-.field input:focus {
+.field input:focus,
+.field select:focus {
   outline: none;
   border-color: var(--accent-dark);
   box-shadow: 0 0 0 3px rgba(201, 163, 101, 0.17);

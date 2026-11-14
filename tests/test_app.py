@@ -171,6 +171,46 @@ class LedgerAppTests(unittest.TestCase):
         self.assertEqual(login_response.status_code, 200)
         self.assertEqual(len(second_client.get("/api/records").json), 1)
 
+    def test_batch_registration_creates_all_records(self):
+        self.login()
+        submissions = [
+            self.record_data(trialNo="T-001", productNo="A 12345"),
+            self.record_data(trialNo="T-002", productNo="B 67890"),
+        ]
+
+        response = self.client.post(
+            "/api/records/batch",
+            json=submissions,
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(
+            [record["trialNo"] for record in response.json["records"]],
+            ["T-001", "T-002"],
+        )
+        self.assertEqual(
+            [record["trialNo"] for record in self.client.get("/api/records").json],
+            ["T-002", "T-001"],
+        )
+
+    def test_batch_registration_rejects_all_records_if_one_is_invalid(self):
+        self.login()
+        submissions = [
+            self.record_data(trialNo="T-001"),
+            self.record_data(trialNo="invalid number"),
+        ]
+
+        response = self.client.post(
+            "/api/records/batch",
+            json=submissions,
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("2件目", response.json["error"])
+        self.assertEqual(self.client.get("/api/records").json, [])
+
     def test_search_by_project_name(self):
         self.login()
         for trial_no, project_name in (

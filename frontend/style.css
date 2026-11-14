@@ -175,6 +175,173 @@ button {
   box-shadow: 0 0 0 3px rgba(201, 163, 101, 0.17);
 }
 
+/* Keep the former equal grid cell widths as a baseline while packing resized fields. */
+.registration-page .form-grid,
+.search-grid {
+  display: flex;
+  flex-wrap: wrap;
+}
+
+.registration-page .record-field-trial-no,
+.search-grid .record-field-trial-no {
+  flex: 0 0 calc(17.5% - 9.45px);
+}
+
+.registration-page .record-field-product-no,
+.search-grid .record-field-product-no {
+  flex: 0 0 calc(20% - 10.8px);
+}
+
+.registration-page .record-field-registration-date,
+.search-grid .record-field-registration-date {
+  flex: 0 0 calc(12.5% - 6.75px);
+}
+
+.registration-page .record-field-manager,
+.search-grid .record-field-manager {
+  flex: 0 0 calc(15% - 8.1px);
+}
+
+.search-grid .record-field-project-name,
+.registration-page .record-field-project-name {
+  flex: 0 0 calc(25% - 13.5px);
+}
+
+@media (min-width: 1535px) {
+  .registration-page .record-field-trial-no,
+  .search-grid .record-field-trial-no {
+    flex-basis: calc(14% - 10.08px);
+  }
+
+  .registration-page .record-field-project-name,
+  .search-grid .record-field-project-name {
+    flex-basis: calc(20% - 14.4px);
+  }
+
+  .registration-page .record-field-product-no,
+  .search-grid .record-field-product-no {
+    flex-basis: calc(16% - 11.52px);
+  }
+
+  .registration-page .record-field-registration-date,
+  .search-grid .record-field-registration-date {
+    flex-basis: calc(10% - 7.2px);
+  }
+
+  .registration-page .record-field-manager,
+  .search-grid .record-field-manager {
+    flex-basis: calc(12% - 8.64px);
+  }
+}
+
+@media (max-width: 1534px) and (min-width: 1255px) {
+  .registration-page .record-field-trial-no,
+  .search-grid .record-field-trial-no {
+    flex-basis: calc(17.5% - 9.45px);
+  }
+
+  .registration-page .record-field-project-name,
+  .search-grid .record-field-project-name {
+    flex-basis: calc(25% - 13.5px);
+  }
+
+  .registration-page .record-field-product-no,
+  .search-grid .record-field-product-no {
+    flex-basis: calc(20% - 10.8px);
+  }
+
+  .registration-page .record-field-registration-date,
+  .search-grid .record-field-registration-date {
+    flex-basis: calc(12.5% - 6.75px);
+  }
+
+  .registration-page .record-field-manager,
+  .search-grid .record-field-manager {
+    flex-basis: calc(15% - 8.1px);
+  }
+}
+
+@media (max-width: 1254px) and (min-width: 934px) {
+  .registration-page .record-field-trial-no,
+  .search-grid .record-field-trial-no {
+    flex-basis: calc(23.333333% - 8.4px);
+  }
+
+  .registration-page .record-field-project-name,
+  .search-grid .record-field-project-name {
+    flex-basis: calc(33.333333% - 12px);
+  }
+
+  .registration-page .record-field-product-no,
+  .search-grid .record-field-product-no {
+    flex-basis: calc(26.666667% - 9.6px);
+  }
+
+  .registration-page .record-field-registration-date,
+  .search-grid .record-field-registration-date {
+    flex-basis: calc(16.666667% - 6px);
+  }
+
+  .registration-page .record-field-manager,
+  .search-grid .record-field-manager {
+    flex-basis: calc(20% - 7.2px);
+  }
+}
+
+@media (max-width: 933px) and (min-width: 761px) {
+  .registration-page .record-field-trial-no,
+  .search-grid .record-field-trial-no {
+    flex-basis: calc(35% - 6.3px);
+  }
+
+  .registration-page .record-field-project-name,
+  .search-grid .record-field-project-name {
+    flex-basis: calc(50% - 9px);
+  }
+
+  .registration-page .record-field-product-no,
+  .search-grid .record-field-product-no {
+    flex-basis: calc(40% - 7.2px);
+  }
+
+  .registration-page .record-field-registration-date,
+  .search-grid .record-field-registration-date {
+    flex-basis: calc(25% - 4.5px);
+  }
+
+  .registration-page .record-field-manager,
+  .search-grid .record-field-manager {
+    flex-basis: calc(30% - 5.4px);
+  }
+}
+
+@media (max-width: 760px) {
+  .registration-page .record-field-trial-no,
+  .search-grid .record-field-trial-no {
+    flex-basis: 70%;
+  }
+
+  .registration-page .record-field-project-name,
+  .search-grid .record-field-project-name {
+    flex-basis: 100%;
+  }
+
+  .registration-page .record-field-product-no,
+  .search-grid .record-field-product-no {
+    flex-basis: 80%;
+  }
+
+  .registration-page .record-field-registration-date,
+  .search-grid .record-field-registration-date {
+    flex-basis: 50%;
+  }
+
+  .registration-page .record-field-manager,
+  .search-grid .record-field-manager {
+    flex-basis: 60%;
+  }
+}
+
 .primary-button,
 .secondary-button,
 .gold-button,
@@ -478,19 +645,6 @@ button {
   margin-bottom: 24px;
   padding: 2px 0 20px;
   border-bottom: 1px solid var(--border);
-}
-
-.record-search-header {
-  border-bottom: 2px solid #aeb8b1;
-}
-
-.record-search-new-button {
-  margin-top: 16px;
-}
-
-.record-search-title {
-  margin: 0 0 16px;
-  font-size: 1.2rem;
 }
 
 .eyebrow,
@@ -1351,12 +1505,23 @@ tbody tr:last-child td {
   background: rgba(0, 0, 0, 0.4);
 }
 
-.new-record-dialog {
-  width: min(440px, calc(100% - 32px));
+.registration-entry + .registration-entry {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
 }
 
-.new-record-dialog .form-grid {
-  grid-template-columns: minmax(0, 1fr);
+.registration-entry-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.registration-entry-heading h3 {
+  margin: 0;
+  font-size: 0.95rem;
 }
 
 .record-detail-heading {

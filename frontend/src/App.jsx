@@ -15,9 +15,13 @@ const SECTION_DETAILS = {
     title: '試験記録の管理',
     description: '制御ユニットのルーチン試験結果を登録・参照します。',
   },
-  searchSection: {
+  registerSection: {
     title: '記録の登録',
-    description: '試験記録を新規登録、または登録済みの記録を検索できます。',
+    description: '新しい試験記録を登録します。',
+  },
+  searchSection: {
+    title: '記録の検索',
+    description: '登録済みの試験記録を検索できます。',
   },
 };
 const EMPTY_FILTERS = {
@@ -133,7 +137,7 @@ function App() {
   const [searchMessage, setSearchMessage] = useState({ text: '', type: '' });
   const [searchFilters, setSearchFilters] = useState(EMPTY_FILTERS);
   const [records, setRecords] = useState([]);
-  const [registrationValues, setRegistrationValues] = useState(emptyRegistrationValues);
+  const [registrationRows, setRegistrationRows] = useState(() => [emptyRegistrationValues()]);
   const [editingRecordId, setEditingRecordId] = useState(null);
   const [existingFiles, setExistingFiles] = useState([]);
   const [previewFiles, setPreviewFiles] = useState([]);
@@ -149,7 +153,6 @@ function App() {
   const savedDetails = useRef({ equipment: null, jumpers: null });
   const [detailMessage, setDetailMessage] = useState({ text: '', type: '' });
   const [recordDirty, setRecordDirty] = useState(false);
-  const [newRecordOpen, setNewRecordOpen] = useState(false);
 
   // 初期表示時にセッション状態を確認し、ログイン済みならそのままアプリ画面を表示する。
   useEffect(() => {
@@ -328,24 +331,9 @@ function App() {
     window.open(`/?recordId=${encodeURIComponent(record.id)}`, '_blank', 'noopener,noreferrer');
   }
 
-  function openNewRecord() {
-    clearRegistrationDraft();
-    setRegisterMessage({ text: '', type: '' });
-    setSection('searchSection');
-    setNewRecordOpen(true);
-  }
-
-  function closeNewRecord() {
-    if (registering) return;
-    if (recordDirty && !window.confirm('未保存の入力を破棄して閉じますか？')) return;
-    setNewRecordOpen(false);
-    clearRegistrationDraft();
-    setRegisterMessage({ text: '', type: '' });
-  }
-
   function clearRegistrationDraft() {
     registerForm.current?.reset();
-    setRegistrationValues(emptyRegistrationValues());
+    setRegistrationRows([emptyRegistrationValues()]);
     setEditingRecordId(null);
     setExistingFiles([]);
     setPreviewFiles([]);
@@ -394,7 +382,6 @@ function App() {
       setSessionMessage('');
       setRegisterMessage({ text: '', type: '' });
       setSearchMessage({ text: '', type: '' });
-      setNewRecordOpen(false);
       setDetailRecord(null);
       clearRegistrationDraft();
     } catch (error) {
@@ -409,8 +396,7 @@ function App() {
     }
   }
 
-  // 試験記録の登録・変更処理。
-  // 入力値の検証後、フォームの内容を multipart/form-data でサーバーへ送る。
+  // 試験記録の登録・変更処理。複数件の新規登録は JSON、それ以外はフォームデータで送信する。
   async function handleRegister(event) {
     event.preventDefault();
     const form = event.currentTarget;
@@ -432,21 +418,21 @@ function App() {
         detailJumpers.map((jumper) => [jumper.name, jumper.confirmed]),
       )));
     }
-    if (!isEditing) {
-      ['projectName', 'productNo', 'registrationDate'].forEach((name) => {
-        formData.set(name, registrationValues[name]);
-      });
-    }
-    const values = Object.fromEntries(
-      ['trialNo', 'projectName', 'productNo', 'registrationDate', 'manager']
-        .map((name) => [name, String(formData.get(name) || '').trim()]),
-    );
-    const validationError = validateRegistration(values);
+    const fieldNames = ['trialNo', 'projectName', 'productNo', 'registrationDate', 'manager'];
+    const valuesList = isEditing
+      ? [Object.fromEntries(fieldNames.map((name) => [name, String(formData.get(name) || '').trim()]))]
+      : registrationRows.map((row) => Object.fromEntries(
+        fieldNames.map((name) => [name, String(row[name] || '').trim()]),
+      ));
+    const validationError = valuesList
+      .map((values, index) => ({ error: validateRegistration(values), index }))
+      .find(({ error }) => error);
     if (validationError) {
-      setRegisterMessage({ text: validationError, type: 'error' });
+      const prefix = valuesList.length > 1 ? `${validationError.index + 1}件目: ` : '';
+      setRegisterMessage({ text: `${prefix}${validationError.error}`, type: 'error' });
       return;
     }
-    const selectedFiles = formData.getAll('resultFiles')
+    const selectedFiles = (isEditing ? formData.getAll('resultFiles') : [])
       .filter((file) => file instanceof File && file.name);
     if (selectedFiles.length > 1) {
       setRegisterMessage({ text: '試験結果ファイルは1件だけ登録できます。', type: 'error' });
@@ -478,14 +464,20 @@ function App() {
 
     setRegistering(true);
     try {
-      const result = await apiRequest(
-        isEditing ? `/api/records/${encodeURIComponent(editingRecordId)}/details` : '/api/records',
-        csrfToken.current,
-        {
-          method: isEditing ? 'PUT' : 'POST',
-          body: formData,
-        },
-      );
+      const requestOptions = { method: isEditing ? 'PUT' : 'POST' };
+      let requestUrl = '/api/records';
+      if (isEditing) {
+        requestUrl = `/api/records/${encodeURIComponent(editingRecordId)}/details`;
+        requestOptions.body = formData;
+      } else if (valuesList.length > 1) {
+        requestUrl = '/api/records/batch';
+        requestOptions.headers = { 'Content-Type': 'application/json' };
+        requestOptions.body = JSON.stringify(valuesList);
+      } else {
+        fieldNames.forEach((name) => formData.set(name, valuesList[0][name]));
+        requestOptions.body = formData;
+      }
+      const result = await apiRequest(requestUrl, csrfToken.current, requestOptions);
       if (isEditing) {
         handleEditRecord(result.record);
         const updatedJumpers = detailJumpers.map((jumper) => ({ ...jumper, confirmed: result.jumperChecks[jumper.name] }));
@@ -493,15 +485,17 @@ function App() {
         setDetailJumpers(updatedJumpers);
         savedDetails.current = { equipment: result.equipment, jumpers: updatedJumpers };
       } else {
-        setRecords((current) => [{ id: result.id, ...values, files: [] }, ...current]);
-        setSelectedRecordId(result.id);
+        const createdRecords = result.records || [{ id: result.id, ...valuesList[0] }];
+        setRecords((current) => [
+          ...createdRecords.map((record) => ({ ...record, files: [] })).reverse(),
+          ...current,
+        ]);
+        setSelectedRecordId(createdRecords[createdRecords.length - 1].id);
         setSearchFilters({ ...EMPTY_FILTERS });
-        setSearchMessage({ text: '記録を登録しました。', type: 'success' });
-        setNewRecordOpen(false);
         clearRegistrationDraft();
       }
       setRegisterMessage({
-        text: isEditing ? '記録を変更しました。' : '登録が完了しました。',
+        text: isEditing ? '記録を変更しました。' : `登録が完了しました（${valuesList.length}件）。`,
         type: 'success',
       });
     } catch (error) {
@@ -518,17 +512,18 @@ function App() {
   }
 
   function handleCopyRecord(record) {
-    openNewRecord();
+    setSection('registerSection');
     setEditingRecordId(null);
+    setRecordDirty(true);
     setExistingFiles([]);
     setRemovedFileIds([]);
-    setRegistrationValues({
+    setRegistrationRows([{
       trialNo: record.trialNo,
       projectName: record.projectName,
       productNo: record.productNo,
       registrationDate: record.registrationDate,
       manager: record.manager,
-    });
+    }]);
     setRegisterMessage({
       text: '記録をコピーしました。試験結果ファイルは登録後に記録の詳細から追加できます。',
       type: 'success',
@@ -543,13 +538,13 @@ function App() {
     setEditingRecordId(record.id);
     setExistingFiles(record.files || []);
     setRemovedFileIds([]);
-    setRegistrationValues({
+    setRegistrationRows([{
       trialNo: record.trialNo,
       projectName: record.projectName,
       productNo: record.productNo,
       registrationDate: record.registrationDate,
       manager: record.manager,
-    });
+    }]);
     setRegisterMessage({ text: '', type: '' });
   }
 
@@ -594,7 +589,9 @@ function App() {
       setDetailEquipment(savedDetails.current.equipment);
       setDetailJumpers(savedDetails.current.jumpers);
     } else {
-      closeNewRecord();
+      if (recordDirty && !window.confirm('未保存の入力を破棄して記録の検索画面へ移動しますか？')) return;
+      clearRegistrationDraft();
+      setSection('searchSection');
     }
     setRegisterMessage({ text: '', type: '' });
   }
@@ -632,8 +629,8 @@ function App() {
     <RegistrationForm
       registerForm={registerForm}
       handleRegister={handleRegister}
-      registrationValues={registrationValues}
-      setRegistrationValues={setRegistrationValues}
+      registrationRows={registrationRows}
+      setRegistrationRows={setRegistrationRows}
       managerChoices={managerChoices}
       editingRecordId={editingRecordId}
       registering={registering}
@@ -694,7 +691,8 @@ function App() {
 
         <nav className="side-nav" aria-label="メインメニュー">
           <NavLink target="dashboardSection" section={section} onNavigate={navigateTo} icon="⌂">概要</NavLink>
-          <NavLink target="searchSection" section={section} onNavigate={navigateTo} icon="⌕">記録の登録</NavLink>
+          <NavLink target="registerSection" section={section} onNavigate={navigateTo} icon="＋">記録の登録</NavLink>
+          <NavLink target="searchSection" section={section} onNavigate={navigateTo} icon="⌕">記録の検索</NavLink>
         </nav>
 
         <div className="sidebar-bottom">
@@ -715,14 +713,11 @@ function App() {
       </aside>
 
       <main className="main-area">
-        <header className={`page-header${section === 'searchSection' ? ' record-search-header' : ''}`}>
+        <header className="page-header">
           <div>
             <p className="eyebrow"><span className="eyebrow-dash" aria-hidden="true"></span> TRIAL LEDGER</p>
             <h1>{pageTitle}</h1>
             <p>{pageDescription}</p>
-            {section === 'searchSection' && (
-              <button type="button" className="primary-button record-search-new-button" onClick={openNewRecord}>新規登録</button>
-            )}
           </div>
           <div className="page-header-actions">
             <span className="system-status"><span className="status-dot" aria-hidden="true"></span>システム稼働中</span>
@@ -738,7 +733,7 @@ function App() {
                 <h2>試験記録を<br />かんたんに管理</h2>
                 <p>試験結果と関連情報を登録し、必要な記録をすぐに検索できます。</p>
                 <div className="welcome-actions">
-                  <button type="button" className="outline-button" onClick={() => navigateTo('searchSection')}>記録の登録</button>
+                  <button type="button" className="outline-button" onClick={() => navigateTo('registerSection')}>記録の登録</button>
                 </div>
                 <span className="welcome-orbit" aria-hidden="true"></span>
               </article>
@@ -784,9 +779,14 @@ function App() {
                   <span className="heading-icon" aria-hidden="true">⌘</span>
                 </div>
                 <div className="quick-links">
+                  <button type="button" className="quick-link" onClick={() => navigateTo('registerSection')}>
+                    <span className="quick-icon register-icon" aria-hidden="true">＋</span>
+                    <span className="quick-copy"><strong>記録の登録</strong><small>新しい試験記録を登録</small></span>
+                    <span className="quick-arrow" aria-hidden="true">›</span>
+                  </button>
                   <button type="button" className="quick-link" onClick={() => navigateTo('searchSection')}>
                     <span className="quick-icon search-icon" aria-hidden="true">⌕</span>
-                    <span className="quick-copy"><strong>記録の登録</strong><small>登録・検索画面を開く</small></span>
+                    <span className="quick-copy"><strong>記録の検索</strong><small>登録済みの記録を検索</small></span>
                     <span className="quick-arrow" aria-hidden="true">›</span>
                   </button>
                 </div>
@@ -795,16 +795,21 @@ function App() {
           </section>
         )}
 
+        {section === 'registerSection' && (
+          <section className="page-section active registration-page">
+            {registrationForm}
+          </section>
+        )}
+
         {section === 'searchSection' && (
           <section className="page-section active">
-            <h2 className="record-search-title">記録の検索</h2>
             <div className="search-panel">
               <div className="search-grid">
-                <SearchField label="試験番号" name="trialNo" value={searchFilters.trialNo} onChange={setSearchFilters} placeholder="試験番号" maxLength={20} />
-                <SearchField label="案件名" name="projectName" value={searchFilters.projectName} onChange={setSearchFilters} placeholder="案件名" maxLength={30} />
-                <SearchField label="製番" name="productNo" value={searchFilters.productNo} onChange={setSearchFilters} placeholder="製番" maxLength={30} />
-                <SearchField label="登録日" name="date" value={searchFilters.date} onChange={setSearchFilters} placeholder="yyyymmdd" maxLength={8} />
-                <SearchField label="担当者" name="manager" value={searchFilters.manager} onChange={setSearchFilters} placeholder="担当者" maxLength={30} />
+                <SearchField label="試験番号" name="trialNo" fieldClassName="record-field-trial-no" value={searchFilters.trialNo} onChange={setSearchFilters} placeholder="試験番号" maxLength={20} />
+                <SearchField label="案件名" name="projectName" fieldClassName="record-field-project-name" value={searchFilters.projectName} onChange={setSearchFilters} placeholder="案件名" maxLength={30} />
+                <SearchField label="製番" name="productNo" fieldClassName="record-field-product-no" value={searchFilters.productNo} onChange={setSearchFilters} placeholder="製番" maxLength={30} />
+                <SearchField label="登録日" name="date" fieldClassName="record-field-registration-date" value={searchFilters.date} onChange={setSearchFilters} placeholder="yyyymmdd" maxLength={8} />
+                <SearchField label="担当者" name="manager" fieldClassName="record-field-manager" value={searchFilters.manager} onChange={setSearchFilters} placeholder="担当者" maxLength={30} />
               </div>
               {searchMessage.text && <Message type={searchMessage.type}>{searchMessage.text}</Message>}
             </div>
@@ -876,69 +881,74 @@ function App() {
           </section>
         )}
       </main>
-      {section === 'searchSection' && newRecordOpen && (
-        <NewRecordDialog onClose={closeNewRecord} registering={registering}>
-          {registrationForm}
-        </NewRecordDialog>
-      )}
     </div>
   );
 }
 
-function NewRecordDialog({ children, onClose, registering }) {
-  const dialog = useRef(null);
-  useEffect(() => {
-    const element = dialog.current;
-    element.showModal();
-    return () => element.close();
-  }, []);
-  return (
-    <dialog
-      ref={dialog}
-      className="record-detail-dialog new-record-dialog"
-      aria-labelledby="new-record-title"
-      onCancel={(event) => { event.preventDefault(); onClose(); }}
-      onKeyDown={(event) => {
-        if (event.key === 'Escape') {
-          event.preventDefault();
-          onClose();
-        }
-      }}
-    >
-      <header className="record-detail-heading">
-        <h2 id="new-record-title">新規登録</h2>
-        <button type="button" className="detail-close" aria-label="閉じる" title="閉じる" disabled={registering} onClick={onClose}>{'\u00d7'}</button>
-      </header>
-      {children}
-    </dialog>
-  );
-}
-
-function RegistrationForm({ registerForm, handleRegister, registrationValues, setRegistrationValues, managerChoices, editingRecordId, registering, cancelRegister, registerMessage, onChange }) {
+function RegistrationForm({ registerForm, handleRegister, registrationRows, setRegistrationRows, managerChoices, editingRecordId, registering, cancelRegister, registerMessage, onChange }) {
   const availableManagers = managerChoices || [];
-  const managerOptions = registrationValues.manager && !availableManagers.includes(registrationValues.manager)
-    ? [registrationValues.manager, ...availableManagers]
-    : availableManagers;
+  const isEditing = editingRecordId !== null;
+
+  function updateRow(index, name, value) {
+    setRegistrationRows((rows) => rows.map((row, rowIndex) => (
+      rowIndex === index ? { ...row, [name]: value } : row
+    )));
+  }
+
+  function addRow() {
+    const sharedValues = registrationRows[0] || emptyRegistrationValues();
+    setRegistrationRows((rows) => [
+      ...rows,
+      { ...sharedValues, trialNo: '', productNo: '' },
+    ]);
+    onChange();
+  }
+
   return (
-    <form id={editingRecordId !== null ? 'record-edit-form' : undefined} ref={registerForm} className="form-panel" onSubmit={handleRegister} onChange={onChange}>
+    <form id={isEditing ? 'record-edit-form' : undefined} ref={registerForm} className="form-panel" onSubmit={handleRegister} onChange={onChange}>
       <fieldset className="record-form-fields" disabled={registering}>
-        <div className="form-grid">
-          <label className="field"><span>試験番号</span><input name="trialNo" type="text" maxLength="20" placeholder="例: 1234567890" value={registrationValues.trialNo} onChange={(event) => setRegistrationValues((values) => ({ ...values, trialNo: event.target.value }))} required /></label>
-          <label className="field"><span>案件名</span><input name="projectName" type="text" maxLength="30" placeholder="例: JR東海N700S CI" value={registrationValues.projectName} onChange={(event) => setRegistrationValues((values) => ({ ...values, projectName: event.target.value }))} /></label>
-          <label className="field"><span>製番</span><input name="productNo" type="text" maxLength="30" placeholder="例: 12345678 DG 0001" value={registrationValues.productNo} onChange={(event) => setRegistrationValues((values) => ({ ...values, productNo: event.target.value }))} /></label>
-          <label className="field"><span>登録日</span><input name="registrationDate" type="text" maxLength="8" value={registrationValues.registrationDate} onChange={(event) => setRegistrationValues((values) => ({ ...values, registrationDate: event.target.value }))} placeholder="yyyymmdd" required /></label>
-          <label className="field">
-            <span>担当者</span>
-            <select name="manager" value={registrationValues.manager} onChange={(event) => setRegistrationValues((values) => ({ ...values, manager: event.target.value }))} required disabled={managerChoices === null}>
-              <option value="" disabled>{managerChoices === null ? '読み込み中...' : managerOptions.length ? '担当者を選択' : '候補がありません'}</option>
-              {managerOptions.map((manager) => <option key={manager} value={manager}>{manager}</option>)}
-            </select>
-            {managerChoices?.length === 0 && <small className="field-help">equipment-config.json の managerChoices に担当者名を設定してください。</small>}
-          </label>
-        </div>
-        {editingRecordId === null && (
+        {!isEditing && <p className="field-help">追加した行には、1件目の案件名・登録日・担当者が引き継がれます。</p>}
+        {registrationRows.map((values, index) => {
+          const managerOptions = values.manager && !availableManagers.includes(values.manager)
+            ? [values.manager, ...availableManagers]
+            : availableManagers;
+          const fieldName = (name) => (index === 0 ? name : `${name}-${index}`);
+          return (
+            <section className="registration-entry" key={index} aria-label={!isEditing ? `記録 ${index + 1}` : undefined}>
+              {!isEditing && (
+                <header className="registration-entry-heading">
+                  <h3>記録 {index + 1}</h3>
+                  {registrationRows.length > 1 && (
+                    <button type="button" className="secondary-button" onClick={() => {
+                      setRegistrationRows((rows) => rows.filter((_, rowIndex) => rowIndex !== index));
+                      onChange();
+                    }}>
+                      この行を削除
+                    </button>
+                  )}
+                </header>
+              )}
+              <div className="form-grid">
+                <label className="field record-field-trial-no"><span>試験番号</span><input name={fieldName('trialNo')} type="text" maxLength="20" placeholder="例: 1234567890" value={values.trialNo} onChange={(event) => updateRow(index, 'trialNo', event.target.value)} required /></label>
+                <label className="field record-field-project-name"><span>案件名</span><input name={fieldName('projectName')} type="text" maxLength="30" placeholder="例: JR東海N700S CI" value={values.projectName} onChange={(event) => updateRow(index, 'projectName', event.target.value)} /></label>
+                <label className="field record-field-product-no"><span>製番</span><input name={fieldName('productNo')} type="text" maxLength="30" placeholder="例: 12345678 DG 0001" value={values.productNo} onChange={(event) => updateRow(index, 'productNo', event.target.value)} /></label>
+                <label className="field record-field-registration-date"><span>登録日</span><input name={fieldName('registrationDate')} type="text" maxLength="8" value={values.registrationDate} onChange={(event) => updateRow(index, 'registrationDate', event.target.value)} placeholder="yyyymmdd" required /></label>
+                <label className="field record-field-manager">
+                  <span>担当者</span>
+                  <select name={fieldName('manager')} value={values.manager} onChange={(event) => updateRow(index, 'manager', event.target.value)} required disabled={managerChoices === null}>
+                    <option value="" disabled>{managerChoices === null ? '読み込み中...' : managerOptions.length ? '担当者を選択' : '候補がありません'}</option>
+                    {managerOptions.map((manager) => <option key={manager} value={manager}>{manager}</option>)}
+                  </select>
+                  {managerChoices?.length === 0 && <small className="field-help">equipment-config.json の managerChoices に担当者名を設定してください。</small>}
+                </label>
+              </div>
+            </section>
+          );
+        })}
+        {!isEditing && (
           <div className="button-row">
-            <button type="submit" className="primary-button" disabled={registering}>{registering ? '処理中...' : '登録'}</button>
+            <button type="button" className="secondary-button" onClick={addRow}>記録を追加</button>
+            <button type="submit" className="primary-button" disabled={registering}>{registering ? '処理中...' : `${registrationRows.length}件を登録`}</button>
             <button type="button" className="secondary-button" onClick={cancelRegister}>キャンセル</button>
           </div>
         )}
@@ -1364,9 +1374,9 @@ function NavLink({ target, section, onNavigate, icon, children }) {
 }
 
 // 検索フォームの各入力欄を共通化したコンポーネント。
-function SearchField({ label, name, value, onChange, placeholder, maxLength }) {
+function SearchField({ label, name, fieldClassName, value, onChange, placeholder, maxLength }) {
   return (
-    <label className="field">
+    <label className={`field${fieldClassName ? ` ${fieldClassName}` : ''}`}>
       <span>{label}</span>
       <input
         type="text"

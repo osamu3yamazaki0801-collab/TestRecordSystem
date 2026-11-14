@@ -684,6 +684,51 @@ def create_app(test_config=None):
             )
         return jsonify(id=record_id), 201
 
+    @app.post("/api/records/batch")
+    @require_csrf
+    @require_login
+    def create_records_batch():
+        submissions = request.get_json(silent=True)
+        if not isinstance(submissions, list) or not submissions:
+            return jsonify(error="登録する記録を1件以上指定してください。"), 400
+
+        validated_submissions = []
+        for index, submission in enumerate(submissions, start=1):
+            if not isinstance(submission, dict):
+                return jsonify(error=f"{index}件目の入力形式が正しくありません。"), 400
+            values, registration_date, _, error = parse_record_submission(
+                submission,
+                [],
+            )
+            if error:
+                return jsonify(error=f"{index}件目: {error[0]}"), error[1]
+            validated_submissions.append((values, registration_date))
+
+        with closing(connect_db()) as connection, connection:
+            created_records = []
+            for values, registration_date in validated_submissions:
+                cursor = connection.execute(
+                    """
+                    INSERT INTO records (
+                        trial_no, project_name, product_no, registration_date,
+                        manager
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        values["trialNo"],
+                        values["projectName"],
+                        values["productNo"],
+                        registration_date,
+                        values["manager"],
+                    ),
+                )
+                created_records.append({
+                    "id": cursor.lastrowid,
+                    **values,
+                    "registrationDate": registration_date,
+                })
+        return jsonify(records=created_records), 201
+
     @app.get("/api/records/<int:record_id>/jumpers")
     @require_login
     def get_jumper_checks(record_id):

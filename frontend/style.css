@@ -401,7 +401,6 @@ button {
 .gold-button,
 .outline-button,
 .nav-link,
-.quick-link,
 .logout-button {
   font-weight: 700;
   cursor: pointer;
@@ -951,7 +950,7 @@ button {
 
 .dashboard-bottom {
   display: grid;
-  grid-template-columns: minmax(0, 0.88fr) minmax(0, 1.12fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
   margin-top: 18px;
 }
@@ -961,173 +960,86 @@ button {
   padding: 20px;
 }
 
-.content-card-heading {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 14px;
-  margin-bottom: 16px;
+.manager-chart-card {
+  overflow: hidden;
 }
 
-.content-card-heading h2 {
-  margin: 6px 0 0;
+.manager-chart-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.manager-chart-heading h2 {
+  margin: 0;
   font-size: 0.98rem;
   letter-spacing: 0.02em;
 }
 
-.heading-icon {
-  display: grid;
-  width: 31px;
-  height: 31px;
-  flex: 0 0 31px;
-  place-items: center;
-  color: #829186;
-  border-radius: 50%;
-  background: #f0ecdf;
-  font-size: 0.95rem;
+.manager-chart-heading > span {
+  color: var(--muted);
+  font-size: 0.68rem;
+  white-space: nowrap;
 }
 
-.latest-record {
-  padding: 15px 14px;
-  border: 1px solid #e9e3d6;
-  border-radius: 8px;
-  background: #faf8f2;
+.manager-chart-scroll {
+  overflow-x: auto;
 }
 
-.latest-topline {
+.manager-chart-svg {
+  display: block;
+  width: 100%;
+  min-width: 520px;
+  height: auto;
+}
+
+.manager-chart-gridline {
+  stroke: #dedbd2;
+  stroke-width: 1;
+}
+
+.manager-chart-axis-label {
+  fill: #66716b;
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.manager-chart-legend {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px 14px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.manager-chart-legend li {
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.latest-label,
-.latest-meta-label {
-  display: block;
-  color: #9b8b70;
-  font-size: 0.57rem;
-  font-weight: 800;
-  letter-spacing: 0.13em;
-}
-
-.latest-chevron {
-  color: #9aa59c;
-  font-size: 1.2rem;
-}
-
-.latest-title {
-  margin: 6px 0 14px;
-  overflow-wrap: anywhere;
-  font-family: "Arial", "Yu Gothic UI", "Meiryo", sans-serif;
-  font-size: 1.2rem;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0.04em;
-}
-
-.latest-meta {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-  padding-top: 11px;
-  border-top: 1px solid #e9e3d6;
-}
-
-.latest-meta-value {
-  display: block;
-  margin-top: 4px;
-  overflow-wrap: anywhere;
+  gap: 5px;
   color: #64736b;
-  font-size: 0.69rem;
+  font-size: 0.68rem;
 }
 
-.dashboard-placeholder {
+.manager-chart-swatch {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 9px;
+}
+
+.dashboard-chart-empty {
+  display: grid;
+  min-height: 260px;
+  place-items: center;
   margin: 0;
   color: var(--muted);
-  font-size: 0.8rem;
+  font-size: 0.82rem;
 }
 
-.quick-links {
-  display: grid;
-  gap: 9px;
-}
 
-.quick-link {
-  display: flex;
-  width: 100%;
-  min-height: 62px;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 12px;
-  text-align: left;
-  border: 1px solid #e9e3d6;
-  border-radius: 8px;
-  background: #faf8f2;
-}
-
-.quick-link:hover {
-  border-color: #d6c8a8;
-  background: #f7f3e8;
-  transform: translateY(-1px);
-}
-
-.quick-icon {
-  display: grid;
-  width: 32px;
-  height: 32px;
-  flex: 0 0 32px;
-  place-items: center;
-  border-radius: 7px;
-  font-size: 1.15rem;
-}
-
-.search-icon {
-  color: #66877a;
-  background: #e6eee6;
-}
-
-.register-icon {
-  color: #a77e42;
-  background: #f2e8d5;
-}
-
-.quick-copy {
-  display: grid;
-  min-width: 0;
-  gap: 4px;
-}
-
-.quick-copy strong {
-  font-size: 0.78rem;
-}
-
-.quick-copy small {
-  overflow: hidden;
-  color: var(--muted);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 0.65rem;
-}
-
-.quick-arrow {
-  margin-left: auto;
-  color: #9aa59c;
-}
-
-.quick-note {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 14px 0 0;
-  padding-top: 12px;
-  color: #929b92;
-  border-top: 1px solid #ece7dc;
-  font-size: 0.65rem;
-}
-
-.quick-note span {
-  font-size: 0.9rem;
-}
 
 .section-heading {
   margin-bottom: 22px;
@@ -2042,16 +1954,6 @@ tbody tr:last-child td {
 
   .stat-label {
     font-size: 0.65rem;
-  }
-
-  .quick-link {
-    gap: 9px;
-    padding-right: 9px;
-    padding-left: 9px;
-  }
-
-  .quick-copy small {
-    max-width: 215px;
   }
 
   .form-grid,

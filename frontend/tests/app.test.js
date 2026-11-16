@@ -124,7 +124,7 @@ async function submitForm(dom) {
   });
 }
 
-function makeSearchFetch(calls, createResponse) {
+function makeSearchFetch(calls, createResponse, dashboardSummary) {
   return async (url, options = {}) => {
     const parsedUrl = new URL(url, 'http://localhost');
     const method = options.method || 'GET';
@@ -136,7 +136,12 @@ function makeSearchFetch(calls, createResponse) {
       return response({ managerChoices: ['山田太郎'], instrumentChoices: [] });
     }
     if (parsedUrl.pathname === '/api/dashboard') {
-      return response({ totalRecords: 0, monthRecords: 0, currentMonth: '2026年11月', latestRecord: null });
+      return response(dashboardSummary || {
+        totalRecords: 0,
+        monthRecords: 0,
+        currentMonth: '2026年11月',
+        managerStats: { year: 2026, managers: [] },
+      });
     }
     if (parsedUrl.pathname === '/api/records' && method === 'POST') {
       const result = createResponse(options.body);
@@ -156,6 +161,61 @@ function makeSearchFetch(calls, createResponse) {
     return response({ error: `Unexpected request: ${method} ${parsedUrl.pathname}` }, 404);
   };
 }
+
+test('the dashboard provides registration and search buttons side by side', async () => {
+  const app = await mountApp('http://localhost/', makeSearchFetch([], () => ({})));
+  try {
+    await waitFor(() => app.dom.window.document.querySelector('.welcome-actions'), 'dashboard actions were not rendered');
+    const buttons = [...app.dom.window.document.querySelectorAll('.welcome-actions button')];
+    assert.deepEqual(buttons.map((button) => button.textContent), ['記録の登録', '記録の検索']);
+
+    await click(app.dom, buttons[1]);
+    assert.ok(findNav(app.dom, '記録の検索').classList.contains('active'));
+  } finally {
+    await app.cleanup();
+  }
+});
+
+test('the dashboard shows monthly manager counts and monthly response ratios', async () => {
+  const dashboardSummary = {
+    totalRecords: 3,
+    monthRecords: 3,
+    currentMonth: '2026年11月',
+    managerStats: {
+      year: 2026,
+      managers: [
+        { name: '山田太郎', counts: [2, ...Array(11).fill(0)] },
+        { name: '佐藤花子', counts: [1, ...Array(11).fill(0)] },
+      ],
+    },
+  };
+  const app = await mountApp(
+    'http://localhost/',
+    makeSearchFetch([], () => ({}), dashboardSummary),
+  );
+  try {
+    await waitFor(
+      () => app.dom.window.document.querySelectorAll('.manager-chart-svg').length === 2,
+      'monthly manager charts were not rendered',
+    );
+    const headings = [...app.dom.window.document.querySelectorAll('.manager-chart-heading h2')]
+      .map((heading) => heading.textContent);
+    assert.deepEqual(headings, ['対応件数', '対応比率']);
+    assert.equal(app.dom.window.document.body.textContent.includes('直近の記録'), false);
+    assert.equal(app.dom.window.document.body.textContent.includes('操作メニュー'), false);
+
+    const countTitles = [...app.dom.window.document.querySelectorAll('.manager-chart-svg circle title')]
+      .map((title) => title.textContent);
+    assert.ok(countTitles.includes('山田太郎: 2件'));
+    assert.ok(countTitles.includes('佐藤花子: 1件'));
+    const rateTitles = [...app.dom.window.document.querySelectorAll('.manager-chart-svg rect title')]
+      .map((title) => title.textContent);
+    assert.ok(rateTitles.includes('山田太郎: 66.7% (2/3件)'));
+    assert.ok(rateTitles.includes('佐藤花子: 33.3% (1/3件)'));
+  } finally {
+    await app.cleanup();
+  }
+});
 
 test('a successful single registration uploads its CSV and navigates to search', async () => {
   const calls = [];

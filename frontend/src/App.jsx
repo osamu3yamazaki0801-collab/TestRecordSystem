@@ -85,6 +85,183 @@ function formatRegistrationDate(value) {
   return `${value.slice(0, 4)}/${value.slice(4, 6)}/${value.slice(6, 8)}`;
 }
 
+function buildManagerStats(records, year) {
+  const countsByManager = new Map();
+  for (const record of records) {
+    if (
+      typeof record.registrationDate !== 'string'
+      || !record.registrationDate.startsWith(String(year))
+      || typeof record.manager !== 'string'
+    ) {
+      continue;
+    }
+    const month = Number(record.registrationDate.slice(4, 6));
+    if (!Number.isInteger(month) || month < 1 || month > 12) continue;
+    const counts = countsByManager.get(record.manager) || Array(12).fill(0);
+    counts[month - 1] += 1;
+    countsByManager.set(record.manager, counts);
+  }
+  return {
+    year,
+    managers: [...countsByManager.entries()]
+      .sort(([first], [second]) => first.localeCompare(second, 'ja'))
+      .map(([name, counts]) => ({ name, counts })),
+  };
+}
+
+const CHART_COLORS = ['#17658a', '#ef6b2e', '#1d702b', '#00a2d8', '#a62698', '#58a83b'];
+const CHART_WIDTH = 760;
+const CHART_HEIGHT = 350;
+const CHART_LEFT = 58;
+const CHART_RIGHT = 744;
+const CHART_TOP = 24;
+const CHART_BOTTOM = 258;
+const CHART_PLOT_HEIGHT = CHART_BOTTOM - CHART_TOP;
+const CHART_PLOT_WIDTH = CHART_RIGHT - CHART_LEFT;
+
+function getCountScale(managers) {
+  const maximumCount = Math.max(0, ...managers.flatMap((manager) => manager.counts));
+  if (maximumCount === 0) return { maximum: 1, step: 1 };
+  const targetStep = maximumCount / 7;
+  const magnitude = 10 ** Math.floor(Math.log10(targetStep));
+  const normalizedStep = targetStep / magnitude;
+  const step = (normalizedStep <= 1 ? 1 : normalizedStep <= 2 ? 2 : normalizedStep <= 5 ? 5 : 10) * magnitude;
+  return { maximum: Math.ceil(maximumCount / step) * step, step };
+}
+
+function ManagerChartLegend({ managers }) {
+  return (
+    <ul className="manager-chart-legend">
+      {managers.map((manager, index) => (
+        <li key={manager.name}>
+          <span className="manager-chart-swatch" style={{ backgroundColor: CHART_COLORS[index % CHART_COLORS.length] }} aria-hidden="true"></span>
+          {manager.name}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function ManagerMonthlyChart({ managerStats, mode }) {
+  const isRateChart = mode === 'rate';
+  const title = isRateChart ? '対応比率' : '対応件数';
+  const managers = managerStats?.managers || [];
+  const hasData = managers.some((manager) => manager.counts.some((count) => count > 0));
+  const { maximum, step } = getCountScale(managers);
+  const countTicks = Array.from({ length: Math.floor(maximum / step) + 1 }, (_, index) => index * step);
+  const months = Array.from({ length: 12 }, (_, index) => index + 1);
+  const formatRate = (rate) => `${Number(rate.toFixed(1))}%`;
+
+  return (
+    <article className="content-card manager-chart-card">
+      <div className="manager-chart-heading">
+        <h2>{title}</h2>
+        <span>{managerStats?.year ? `${managerStats.year}年` : '年間集計'}</span>
+      </div>
+      {hasData ? (
+        <>
+          <div className="manager-chart-scroll">
+            <svg
+              className="manager-chart-svg"
+              viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`}
+              role="img"
+              aria-label={`${managerStats.year}年の個人別月次${title}${isRateChart ? '。比率は月ごとの対応件数を合計した値に対する割合です。' : ''}`}
+            >
+              <title>{`${managerStats.year}年の${title}`}</title>
+              {(isRateChart ? [0, 20, 40, 60, 80, 100] : countTicks).map((tick) => {
+                const y = isRateChart
+                  ? CHART_BOTTOM - (tick / 100) * CHART_PLOT_HEIGHT
+                  : CHART_BOTTOM - (tick / maximum) * CHART_PLOT_HEIGHT;
+                return (
+                  <g key={tick}>
+                    <line x1={CHART_LEFT} x2={CHART_RIGHT} y1={y} y2={y} className="manager-chart-gridline" />
+                    <text x={CHART_LEFT - 9} y={y + 4} textAnchor="end" className="manager-chart-axis-label">
+                      {isRateChart ? `${tick}%` : tick}
+                    </text>
+                  </g>
+                );
+              })}
+              {months.map((month, monthIndex) => {
+                const x = CHART_LEFT + (CHART_PLOT_WIDTH * (monthIndex + 0.5)) / 12;
+                return (
+                  <text
+                    key={month}
+                    x={x}
+                    y={CHART_BOTTOM + 40}
+                    transform={`rotate(-45 ${x} ${CHART_BOTTOM + 40})`}
+                    textAnchor="end"
+                    className="manager-chart-axis-label"
+                  >
+                    {managerStats.year}年{month}月
+                  </text>
+                );
+              })}
+              {isRateChart ? months.map((month, monthIndex) => {
+                const total = managers.reduce((sum, manager) => sum + manager.counts[monthIndex], 0);
+                let stackedCount = 0;
+                const x = CHART_LEFT + (CHART_PLOT_WIDTH * (monthIndex + 0.5)) / 12;
+                return managers.map((manager, managerIndex) => {
+                  const count = manager.counts[monthIndex];
+                  if (count === 0 || total === 0) return null;
+                  const height = (count / total) * CHART_PLOT_HEIGHT;
+                  const y = CHART_BOTTOM - ((stackedCount + count) / total) * CHART_PLOT_HEIGHT;
+                  stackedCount += count;
+                  return (
+                    <rect
+                      key={`${month}-${manager.name}`}
+                      x={x - 16}
+                      y={y}
+                      width="32"
+                      height={height}
+                      fill={CHART_COLORS[managerIndex % CHART_COLORS.length]}
+                    >
+                      <title>{`${manager.name}: ${formatRate((count / total) * 100)} (${count}/${total}件)`}</title>
+                    </rect>
+                  );
+                });
+              }) : managers.map((manager, managerIndex) => {
+                const points = manager.counts.map((count, monthIndex) => {
+                  const x = CHART_LEFT + (CHART_PLOT_WIDTH * (monthIndex + 0.5)) / 12;
+                  const y = CHART_BOTTOM - (count / maximum) * CHART_PLOT_HEIGHT;
+                  return { x, y, count };
+                });
+                return (
+                  <g key={manager.name}>
+                    <polyline
+                      points={points.map(({ x, y }) => `${x},${y}`).join(' ')}
+                      fill="none"
+                      stroke={CHART_COLORS[managerIndex % CHART_COLORS.length]}
+                      strokeWidth="3"
+                      strokeLinejoin="round"
+                      strokeLinecap="round"
+                    />
+                    {points.map(({ x, y, count }, monthIndex) => (
+                      <circle
+                        key={monthIndex}
+                        cx={x}
+                        cy={y}
+                        r="4"
+                        fill={CHART_COLORS[managerIndex % CHART_COLORS.length]}
+                      >
+                        <title>{`${manager.name}: ${count}件`}</title>
+                      </circle>
+                    ))}
+                  </g>
+                );
+              })}
+            </svg>
+          </div>
+          <ManagerChartLegend managers={managers} />
+        </>
+      ) : (
+        <p className="dashboard-chart-empty">
+          {managerStats ? `${managerStats.year}年の対応記録はありません。` : '集計を読み込み中です。'}
+        </p>
+      )}
+    </article>
+  );
+}
+
 // フォーム入力値の妥当性をチェックする。
 // バリデーションは画面側でも行い、サーバー側の入力チェックと齟齬が起きにくくする。
 function validateRegistration(values) {
@@ -214,7 +391,7 @@ function App() {
               totalRecords: allRecords.length,
               monthRecords: allRecords.filter((record) => record.registrationDate.startsWith(currentMonth)).length,
               currentMonth: `${now.getFullYear()}年${now.getMonth() + 1}月`,
-              latestRecord: allRecords[0] || null,
+              managerStats: buildManagerStats(allRecords, now.getFullYear()),
             });
             setDashboardMessage({
               text: '集計APIを利用できないため、記録一覧から集計しています。アプリサーバーを再起動してください。',
@@ -644,7 +821,6 @@ function App() {
   const details = SECTION_DETAILS[section];
   const pageTitle = details.title;
   const pageDescription = details.description;
-  const latestRecord = dashboard?.latestRecord;
 
   const registrationForm = (
     <RegistrationForm
@@ -755,6 +931,7 @@ function App() {
                 <p>試験結果と関連情報を登録し、必要な記録をすぐに検索できます。</p>
                 <div className="welcome-actions">
                   <button type="button" className="outline-button" onClick={() => navigateTo('registerSection')}>記録の登録</button>
+                  <button type="button" className="outline-button" onClick={() => navigateTo('searchSection')}>記録の検索</button>
                 </div>
                 <span className="welcome-orbit" aria-hidden="true"></span>
               </article>
@@ -773,45 +950,8 @@ function App() {
             </div>
             {dashboardMessage.text && <Message type={dashboardMessage.type}>{dashboardMessage.text}</Message>}
             <div className="dashboard-bottom">
-              <article className="content-card">
-                <div className="content-card-heading">
-                  <div><p className="card-kicker">LATEST RECORD</p><h2>直近の記録</h2></div>
-                  <span className="heading-icon" aria-hidden="true">↗</span>
-                </div>
-                <div className="latest-record">
-                  {latestRecord ? (
-                    <>
-                      <div className="latest-topline">
-                        <span className="latest-label">TEST NO.</span>
-                        <span className="latest-chevron" aria-hidden="true">›</span>
-                      </div>
-                      <h3 className="latest-title">{latestRecord.trialNo}</h3>
-                      <div className="latest-meta">
-                        <div><span className="latest-meta-label">製番</span><span className="latest-meta-value">{latestRecord.productNo}</span></div>
-                        <div><span className="latest-meta-label">登録日</span><span className="latest-meta-value">{formatRegistrationDate(latestRecord.registrationDate)}</span></div>
-                      </div>
-                    </>
-                  ) : <p className="dashboard-placeholder">登録された試験記録はありません。</p>}
-                </div>
-              </article>
-              <article className="content-card">
-                <div className="content-card-heading">
-                  <div><p className="card-kicker">QUICK ACCESS</p><h2>操作メニュー</h2></div>
-                  <span className="heading-icon" aria-hidden="true">⌘</span>
-                </div>
-                <div className="quick-links">
-                  <button type="button" className="quick-link" onClick={() => navigateTo('registerSection')}>
-                    <span className="quick-icon register-icon" aria-hidden="true">＋</span>
-                    <span className="quick-copy"><strong>記録の登録</strong><small>新しい試験記録を登録</small></span>
-                    <span className="quick-arrow" aria-hidden="true">›</span>
-                  </button>
-                  <button type="button" className="quick-link" onClick={() => navigateTo('searchSection')}>
-                    <span className="quick-icon search-icon" aria-hidden="true">⌕</span>
-                    <span className="quick-copy"><strong>記録の検索</strong><small>登録済みの記録を検索</small></span>
-                    <span className="quick-arrow" aria-hidden="true">›</span>
-                  </button>
-                </div>
-              </article>
+              <ManagerMonthlyChart managerStats={dashboard?.managerStats} mode="count" />
+              <ManagerMonthlyChart managerStats={dashboard?.managerStats} mode="rate" />
             </div>
           </section>
         )}

@@ -596,11 +596,15 @@ def create_app(test_config=None):
         session.clear()
         return jsonify(success=True)
 
-    # ダッシュボード表示に必要な件数と最新記録を返す。
+    # ダッシュボード表示に必要な件数と担当者別の月次集計を返す。
     @app.get("/api/dashboard")
     @require_login
     def dashboard():
-        current_month = date.today().strftime("%Y%m")
+        today = date.today()
+        current_month = today.strftime("%Y%m")
+        year = today.year
+        year_start = f"{year}0101"
+        next_year_start = f"{year + 1}0101"
         with closing(connect_db()) as connection:
             total_records = connection.execute(
                 "SELECT COUNT(*) FROM records"
@@ -609,35 +613,33 @@ def create_app(test_config=None):
                 "SELECT COUNT(*) FROM records WHERE substr(registration_date, 1, 6) = ?",
                 (current_month,),
             ).fetchone()[0]
-            row = connection.execute(
+            monthly_rows = connection.execute(
                 """
-                SELECT id, trial_no, project_name, product_no,
-                       registration_date, manager,
-                       (SELECT file_name FROM record_files
-                        WHERE record_id = records.id ORDER BY id LIMIT 1) AS file_name
+                SELECT substr(registration_date, 5, 2) AS month,
+                       manager, COUNT(*) AS count
                 FROM records
-                ORDER BY id DESC
-                LIMIT 1
-                """
-            ).fetchone()
-        latest_record = (
-            {
-                "id": row["id"],
-                "trialNo": row["trial_no"],
-                "projectName": row["project_name"],
-                "productNo": row["product_no"],
-                "registrationDate": row["registration_date"],
-                "manager": row["manager"],
-                "fileName": row["file_name"],
-            }
-            if row
-            else None
-        )
+                WHERE registration_date >= ? AND registration_date < ?
+                GROUP BY month, manager
+                ORDER BY manager, month
+                """,
+                (year_start, next_year_start),
+            ).fetchall()
+        manager_counts = {}
+        for row in monthly_rows:
+            counts = manager_counts.setdefault(row["manager"], [0] * 12)
+            counts[int(row["month"]) - 1] = row["count"]
+        manager_stats = {
+            "year": year,
+            "managers": [
+                {"name": manager, "counts": counts}
+                for manager, counts in manager_counts.items()
+            ],
+        }
         return jsonify(
             totalRecords=total_records,
             monthRecords=month_records,
-            currentMonth=date.today().strftime("%Y年%m月"),
-            latestRecord=latest_record,
+            currentMonth=today.strftime("%Y年%m月"),
+            managerStats=manager_stats,
         )
 
     # 記録の一覧取得と新規登録をまとめて扱う API。

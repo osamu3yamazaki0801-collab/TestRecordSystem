@@ -1242,12 +1242,13 @@ class LedgerAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(self.client.get("/api/records").json, [])
 
-    def test_dashboard_summary_shows_totals_and_latest_record(self):
+    def test_dashboard_summary_includes_monthly_manager_counts(self):
         self.login()
         empty_summary = self.client.get("/api/dashboard").json
         self.assertEqual(empty_summary["totalRecords"], 0)
         self.assertEqual(empty_summary["monthRecords"], 0)
-        self.assertIsNone(empty_summary["latestRecord"])
+        self.assertEqual(empty_summary["managerStats"]["year"], date.today().year)
+        self.assertEqual(empty_summary["managerStats"]["managers"], [])
 
         today = date.today().strftime("%Y%m%d")
         response = self.client.post(
@@ -1260,16 +1261,43 @@ class LedgerAppTests(unittest.TestCase):
             headers={"X-CSRF-Token": self.csrf_token},
         )
         self.assertEqual(response.status_code, 201)
+        other_manager_response = self.client.post(
+            "/api/records",
+            data=self.record_data(
+                trialNo="T-DASH-OTHER",
+                registrationDate=today,
+                manager="佐藤花子",
+            ),
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(other_manager_response.status_code, 201)
+        previous_year_response = self.client.post(
+            "/api/records",
+            data=self.record_data(
+                trialNo="T-DASH-PREVIOUS",
+                registrationDate=f"{date.today().year - 1}1231",
+                manager="前年担当",
+            ),
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(previous_year_response.status_code, 201)
 
         summary = self.client.get("/api/dashboard").json
-        self.assertEqual(summary["totalRecords"], 1)
-        self.assertEqual(summary["monthRecords"], 1)
+        self.assertEqual(summary["totalRecords"], 3)
+        self.assertEqual(summary["monthRecords"], 2)
         self.assertEqual(
             summary["currentMonth"],
             f"{today[:4]}年{int(today[4:6])}月",
         )
-        self.assertEqual(summary["latestRecord"]["trialNo"], "T-DASH")
-        self.assertEqual(summary["latestRecord"]["productNo"], "DASH-123")
+        manager_counts = {
+            manager["name"]: manager["counts"]
+            for manager in summary["managerStats"]["managers"]
+        }
+        current_month_index = date.today().month - 1
+        self.assertEqual(manager_counts["山田太郎"][current_month_index], 1)
+        self.assertEqual(manager_counts["佐藤花子"][current_month_index], 1)
+        self.assertNotIn("前年担当", manager_counts)
+        self.assertEqual(len(manager_counts["山田太郎"]), 12)
 
     def test_accepts_cjk_compatibility_ideograph_in_manager(self):
         self.login()

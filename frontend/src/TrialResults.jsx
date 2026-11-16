@@ -28,6 +28,10 @@ function hasNgJudgement(row) {
   return getRowJudgements(row).includes('NG');
 }
 
+function getSectionTabName(sectionNumber) {
+  return sectionNumber === 1 ? 'アナログ系' : 'デジタル系';
+}
+
 export default function TrialResults({ recordId, files, pendingFiles, csrfToken, request, setAuthenticated, setLoginError, fileActionPending, onDeleteFile }) {
   const [selectedKey, setSelectedKey] = useState('');
   const [parsed, setParsed] = useState(null);
@@ -87,6 +91,7 @@ export default function TrialResults({ recordId, files, pendingFiles, csrfToken,
   if (!source) return null;
 
   const section = data?.sections[sectionIndex];
+  const sectionTabName = section ? getSectionTabName(section.number) : '';
   const searchTerm = search.trim().toLocaleLowerCase();
   const rows = section?.rows.filter((row) => (
     (!searchTerm
@@ -213,7 +218,7 @@ export default function TrialResults({ recordId, files, pendingFiles, csrfToken,
                   setSectionIndex(next);
                   event.currentTarget.parentElement.children[next].focus();
                 }}
-              >{item.title}</button>
+              >{getSectionTabName(item.number)}</button>
             ))}
           </div>
           <div role="tabpanel" id={`csv-panel-${section.number}`} aria-labelledby={`csv-tab-${section.number}`}>
@@ -227,10 +232,10 @@ export default function TrialResults({ recordId, files, pendingFiles, csrfToken,
               <label className="field"><span>試験項目を検索</span><input type="search" value={search} onChange={(event) => setSearch(event.target.value)} /></label>
               <label className="field"><span>判定</span><select value={judgement} onChange={(event) => setJudgement(event.target.value)}><option value="">すべて</option><option value="NG">NG</option><option value="UNJUDGED">未判定</option><option value="PASS">PASS</option></select></label>
             </div>
-            <div className="csv-table-wrap" tabIndex={0} aria-label={`${section.title}の測定結果`}>
+            <div className="csv-table-wrap" tabIndex={0} aria-label={`${sectionTabName}の測定結果`}>
               <table
                 className={`trial-results-table${analog ? ' analog' : ''}`}
-                aria-label={section.title}
+                aria-label={sectionTabName}
                 style={tableWidth ? { width: tableWidth, minWidth: tableWidth } : undefined}
               >
                 <colgroup>
@@ -239,14 +244,18 @@ export default function TrialResults({ recordId, files, pendingFiles, csrfToken,
                   {Array.from({ length: baseColumns - 2 }, (_, index) => (
                     <col
                       key={`base-${index}`}
-                      className={index === baseColumns - 3 ? 'csv-unit-column' : 'csv-value-column'}
+                      className={index === baseColumns - 3
+                        ? 'csv-unit-column'
+                        : analog ? 'csv-analog-limit-column' : 'csv-value-column'}
                       style={columnStyle(index + 2)}
                     />
                   ))}
                   {Array.from({ length: temperatureWidth * 3 }, (_, index) => (
                     <col
                       key={`measurement-${index}`}
-                      className={index % 2 ? 'csv-judgement-column' : 'csv-value-column'}
+                      className={index % 2
+                        ? 'csv-judgement-column'
+                        : analog ? 'csv-analog-measurement-column' : 'csv-value-column'}
                       style={columnStyle(baseColumns + index)}
                     />
                   ))}

@@ -753,6 +753,15 @@ function App() {
       : current);
   }
 
+  function handlePowerBoardReportChanged(recordId, powerBoardReport) {
+    setRecords((current) => current.map((item) => item.id === recordId
+      ? { ...item, powerBoardReport }
+      : item));
+    setDetailRecord((current) => current && current.id === recordId
+      ? { ...current, powerBoardReport }
+      : current);
+  }
+
   async function handleDeleteRecord(record) {
     if (!window.confirm(
       `試験番号「${record.trialNo}」の記録と添付ファイルを削除します。この操作は取り消せません。`,
@@ -861,6 +870,7 @@ function App() {
             registrationForm={registrationForm}
             existingFiles={existingFiles}
             onFilesChanged={handleDetailFilesChanged}
+            onPowerBoardReportChanged={handlePowerBoardReportChanged}
             setAuthenticated={setAuthenticated}
             setLoginError={setLoginError}
           />
@@ -1096,12 +1106,12 @@ function RegistrationForm({ registerForm, handleRegister, registrationRows, setR
                 </header>
               )}
               <div className="form-grid">
-                <label className="field record-field-trial-no"><span>試験番号</span><input name={fieldName('trialNo')} type="text" maxLength="20" placeholder="例: 1234567890" value={values.trialNo} onChange={(event) => updateRow(index, 'trialNo', event.target.value)} required /></label>
+                <label className="field record-field-trial-no"><span>試験番号<span className="required-badge">必須</span></span><input name={fieldName('trialNo')} type="text" maxLength="20" placeholder="例: 1234567890" value={values.trialNo} onChange={(event) => updateRow(index, 'trialNo', event.target.value)} required /></label>
                 <label className="field record-field-project-name"><span>案件名</span><input name={fieldName('projectName')} type="text" maxLength="30" placeholder="例: JR東海N700S CI" value={values.projectName} onChange={(event) => updateRow(index, 'projectName', event.target.value)} /></label>
                 <label className="field record-field-product-no"><span>製番</span><input name={fieldName('productNo')} type="text" maxLength="30" placeholder="例: 12345678 DG 0001" value={values.productNo} onChange={(event) => updateRow(index, 'productNo', event.target.value)} /></label>
                 <label className="field record-field-registration-date"><span>登録日</span><input name={fieldName('registrationDate')} type="text" maxLength="8" value={values.registrationDate} onChange={(event) => updateRow(index, 'registrationDate', event.target.value)} placeholder="yyyymmdd" required /></label>
                 <label className="field record-field-manager">
-                  <span>担当者</span>
+                  <span>担当者<span className="required-badge">必須</span></span>
                   <select name={fieldName('manager')} value={values.manager} onChange={(event) => updateRow(index, 'manager', event.target.value)} required disabled={managerChoices === null}>
                     <option value="" disabled>{managerChoices === null ? '読み込み中...' : managerOptions.length ? '担当者を選択' : '候補がありません'}</option>
                     {managerOptions.map((manager) => <option key={manager} value={manager}>{manager}</option>)}
@@ -1120,9 +1130,8 @@ function RegistrationForm({ registerForm, handleRegister, registrationRows, setR
                         onChange={(event) => updateRow(index, 'resultFile', event.currentTarget.files?.[0] || null)}
                       />
                     </label>
-                    <small className="field-help">
-                      {values.resultFile ? values.resultFile.name : '任意・登録後に記録の詳細で表示'}
-                    </small>
+                    <small className="field-help">自動試験システムの試験結果CSVをインポートしてください。</small>
+                    {values.resultFile && <small className="field-help selected-file-name">{values.resultFile.name}</small>}
                   </div>
                 )}
               </div>
@@ -1142,13 +1151,15 @@ function RegistrationForm({ registerForm, handleRegister, registrationRows, setR
   );
 }
 
-function RecordDetails({ record, onClose, recordDirty, registering, registrationForm, equipment, instrumentChoices, setEquipment, jumpers, setJumpers, onDirty, cancelRegister, registerMessage, pendingFiles, existingFiles, onFilesChanged, csrfToken, setAuthenticated, setLoginError }) {
+function RecordDetails({ record, onClose, recordDirty, registering, registrationForm, equipment, instrumentChoices, setEquipment, jumpers, setJumpers, onDirty, cancelRegister, registerMessage, pendingFiles, existingFiles, onFilesChanged, onPowerBoardReportChanged, csrfToken, setAuthenticated, setLoginError }) {
   const [activeTab, setActiveTab] = useState(() => (
     existingFiles.some((file) => /\.csv$/i.test(file.fileName)) ? 2 : 0
   ));
   const [commonPanelWidth, setCommonPanelWidth] = useState(240);
   const [fileActionPending, setFileActionPending] = useState(false);
   const [fileActionMessage, setFileActionMessage] = useState({ text: '', type: '' });
+  const [reportActionPending, setReportActionPending] = useState(false);
+  const [reportActionMessage, setReportActionMessage] = useState({ text: '', type: '' });
   const dividerDrag = useRef(null);
   const detailTabs = [
     '試験情報',
@@ -1246,8 +1257,59 @@ function RecordDetails({ record, onClose, recordDirty, registering, registration
     }
   }
 
+  async function uploadPowerBoardReport(event) {
+    const input = event.currentTarget;
+    const file = input.files[0];
+    input.value = '';
+    if (!file) return;
+
+    const formData = new FormData();
+    formData.append('reportFile', file);
+    setReportActionPending(true);
+    setReportActionMessage({ text: '電源基板試験成績票を保存中...', type: '' });
+    try {
+      const result = await apiRequest(`/api/records/${record.id}/power-board-report`, csrfToken, {
+        method: 'POST',
+        body: formData,
+      });
+      onPowerBoardReportChanged(record.id, result.report);
+      setReportActionMessage({ text: '電源基板試験成績票を保存しました。', type: 'success' });
+    } catch (error) {
+      setReportActionMessage({ text: error.message, type: 'error' });
+      if (error.status === 401) {
+        setAuthenticated(false);
+        setLoginError(error.message);
+      }
+    } finally {
+      setReportActionPending(false);
+    }
+  }
+
+  async function deletePowerBoardReport() {
+    if (!window.confirm('電源基板試験成績票を削除しますか？')) return;
+    setReportActionPending(true);
+    setReportActionMessage({ text: '電源基板試験成績票を削除中...', type: '' });
+    try {
+      const result = await apiRequest(
+        `/api/records/${record.id}/power-board-report`,
+        csrfToken,
+        { method: 'DELETE' },
+      );
+      onPowerBoardReportChanged(record.id, result.report);
+      setReportActionMessage({ text: '電源基板試験成績票を削除しました。', type: 'success' });
+    } catch (error) {
+      setReportActionMessage({ text: error.message, type: 'error' });
+      if (error.status === 401) {
+        setAuthenticated(false);
+        setLoginError(error.message);
+      }
+    } finally {
+      setReportActionPending(false);
+    }
+  }
+
   function closeDetails() {
-    if (registering || fileActionPending) return;
+    if (registering || fileActionPending || reportActionPending) return;
     onClose();
   }
 
@@ -1257,13 +1319,13 @@ function RecordDetails({ record, onClose, recordDirty, registering, registration
 
   useEffect(() => {
     const handleBeforeUnload = (event) => {
-      if (!recordDirty && !registering && !fileActionPending) return;
+      if (!recordDirty && !registering && !fileActionPending && !reportActionPending) return;
       event.preventDefault();
       event.returnValue = '';
     };
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [recordDirty, registering, fileActionPending]);
+  }, [recordDirty, registering, fileActionPending, reportActionPending]);
 
   return (
     <section
@@ -1281,10 +1343,10 @@ function RecordDetails({ record, onClose, recordDirty, registering, registration
         {registrationForm}
         <div className="button-row">
           {recordDirty && <span className="status-text warning">未保存</span>}
-          <button type="submit" form="record-edit-form" className="primary-button" disabled={registering || fileActionPending || !equipment || !jumpers}>
+          <button type="submit" form="record-edit-form" className="primary-button" disabled={registering || fileActionPending || reportActionPending || !equipment || !jumpers}>
             {registering ? '保存中...' : '保存'}
           </button>
-          <button type="button" className="secondary-button" disabled={registering || fileActionPending} onClick={cancelRegister}>キャンセル</button>
+          <button type="button" className="secondary-button" disabled={registering || fileActionPending || reportActionPending} onClick={cancelRegister}>キャンセル</button>
         </div>
         {registerMessage.text && <Message type={registerMessage.type}>{registerMessage.text}</Message>}
       </div>
@@ -1372,6 +1434,50 @@ function RecordDetails({ record, onClose, recordDirty, registering, registration
                   </table>
                 </div>
               ) : <Message>読み込み中...</Message>}
+              <section className="power-board-report-section" aria-labelledby="power-board-report-title">
+                <h3 id="power-board-report-title">電源基板試験成績票</h3>
+                {record.powerBoardReport ? (
+                  <>
+                    <div className="power-board-report-controls">
+                      <span>{record.powerBoardReport.fileName}</span>
+                      <div className="button-row">
+                        <a
+                          className="secondary-button"
+                          href={`/api/records/${record.id}/power-board-report`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >PDFを別タブで開く</a>
+                        <button
+                          type="button"
+                          className="delete-button"
+                          disabled={registering || fileActionPending || reportActionPending}
+                          onClick={deletePowerBoardReport}
+                        >{reportActionPending ? '削除中...' : '削除する'}</button>
+                      </div>
+                    </div>
+                    <iframe
+                      className="power-board-report-preview"
+                      title="電源基板試験成績票"
+                      src={`/api/records/${record.id}/power-board-report`}
+                    />
+                  </>
+                ) : (
+                  <div className="field file-field result-file-picker">
+                    <span>試験成績票PDFファイル</span>
+                    <label className={`secondary-button file-picker-control${reportActionPending ? ' is-disabled' : ''}`}>
+                      <span>{reportActionPending ? '登録中...' : 'ファイルを選択'}</span>
+                      <input
+                        type="file"
+                        accept=".pdf,application/pdf"
+                        disabled={registering || fileActionPending || reportActionPending}
+                        onChange={uploadPowerBoardReport}
+                      />
+                    </label>
+                    <small className="field-help">電源基板の試験成績票PDFを登録してください。</small>
+                  </div>
+                )}
+                {reportActionMessage.text && <Message type={reportActionMessage.type}>{reportActionMessage.text}</Message>}
+              </section>
             </>
           )}
           {index === 2 && (
@@ -1386,7 +1492,7 @@ function RecordDetails({ record, onClose, recordDirty, registering, registration
                       <input
                         type="file"
                         accept=".csv,text/csv"
-                        disabled={registering || fileActionPending}
+                        disabled={registering || fileActionPending || reportActionPending}
                         onChange={uploadTrialResults}
                       />
                     </label>
@@ -1402,7 +1508,7 @@ function RecordDetails({ record, onClose, recordDirty, registering, registration
                 request={apiRequest}
                 setAuthenticated={setAuthenticated}
                 setLoginError={setLoginError}
-                fileActionPending={fileActionPending}
+                fileActionPending={fileActionPending || reportActionPending}
                 onDeleteFile={() => deleteTrialResults(existingFiles[0])}
               />
               {fileActionMessage.text && <Message type={fileActionMessage.type}>{fileActionMessage.text}</Message>}

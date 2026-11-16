@@ -105,11 +105,11 @@ async function selectValue(dom, select, value) {
   });
 }
 
-async function chooseFile(dom, input, filename) {
+async function chooseFile(dom, input, filename, type = 'text/csv', content = 'csv content') {
   await act(async () => {
     Object.defineProperty(input, 'files', {
       configurable: true,
-      value: [new dom.window.File(['csv content'], filename, { type: 'text/csv' })],
+      value: [new dom.window.File([content], filename, { type })],
     });
     input.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
   });
@@ -171,6 +171,24 @@ test('the dashboard provides registration and search buttons side by side', asyn
 
     await click(app.dom, buttons[1]);
     assert.ok(findNav(app.dom, '記録の検索').classList.contains('active'));
+  } finally {
+    await app.cleanup();
+  }
+});
+
+test('the registration form visibly marks trial number and manager as required', async () => {
+  const app = await mountApp('http://localhost/', makeSearchFetch([], () => ({})));
+  try {
+    await waitFor(() => findNav(app.dom, '記録の登録'), 'registration navigation was not rendered');
+    await click(app.dom, findNav(app.dom, '記録の登録'));
+    await waitFor(() => app.dom.window.document.querySelector('.registration-page input[name="trialNo"]'), 'registration form was not rendered');
+
+    const resultFileField = app.dom.window.document.querySelector('.record-field-result-file');
+    assert.ok(resultFileField.textContent.includes('自動試験システムの試験結果CSVをインポートしてください。'));
+    assert.equal(resultFileField.textContent.includes('任意・登録後に記録の詳細で表示'), false);
+    const requiredFields = [...app.dom.window.document.querySelectorAll('.registration-page .required-badge')]
+      .map((badge) => badge.parentElement.textContent.replace('必須', '').trim());
+    assert.deepEqual(requiredFields, ['試験番号', '担当者']);
   } finally {
     await app.cleanup();
   }
@@ -243,6 +261,10 @@ test('a successful single registration uploads its CSV and navigates to search',
     await enterText(app.dom, app.dom.window.document.querySelector('input[name="trialNo"]'), record.trialNo);
     await selectValue(app.dom, app.dom.window.document.querySelector('select[name="manager"]'), record.manager);
     await chooseFile(app.dom, app.dom.window.document.querySelector('input[type="file"]'), file.fileName);
+    await waitFor(
+      () => app.dom.window.document.querySelector('.record-field-result-file .selected-file-name')?.textContent === file.fileName,
+      'selected CSV filename was not shown',
+    );
     await click(app.dom, app.dom.window.document.querySelector('.registration-page button[type="submit"]'));
 
     await waitFor(
@@ -433,6 +455,11 @@ test('opening a CSV record selects the trial results tab and renders imported da
       () => app.dom.window.document.body.textContent.includes('B5-1-01'),
       'parsed CSV rows were not rendered',
     );
+    assert.deepEqual(
+      [...app.dom.window.document.querySelectorAll('.csv-section-tabs [role="tab"]')]
+        .map((tab) => tab.textContent),
+      ['アナログ系', 'デジタル系'],
+    );
     assert.ok(app.dom.window.document.body.textContent.includes('Parsed product'));
     const ngJudgement = [...app.dom.window.document.querySelectorAll('.csv-judgement')]
       .find((element) => element.textContent === 'NG');
@@ -458,6 +485,8 @@ test('opening a CSV record selects the trial results tab and renders imported da
     );
     await selectValue(app.dom, judgementFilter, '');
     const analogTable = app.dom.window.document.querySelector('.trial-results-table.analog');
+    assert.equal(analogTable.querySelectorAll('col.csv-analog-limit-column').length, 2);
+    assert.equal(analogTable.querySelectorAll('col.csv-analog-measurement-column').length, 6);
     const analogWidths = [96, 382, 90, 90, 72, ...Array(6).fill([90, 70]).flat()];
     [...analogTable.querySelectorAll('col')].forEach((column, index) => {
       column.getBoundingClientRect = () => ({ width: analogWidths[index] });
@@ -484,7 +513,7 @@ test('opening a CSV record selects the trial results tab and renders imported da
     });
 
     const digitalTab = [...app.dom.window.document.querySelectorAll('.csv-section-tabs [role="tab"]')]
-      .find((tab) => tab.textContent === '試験結果 2');
+      .find((tab) => tab.textContent === 'デジタル系');
     await click(app.dom, digitalTab);
     const searchInput = app.dom.window.document.querySelector('.csv-filters input');
     await enterText(app.dom, searchInput, 'B7');
@@ -544,6 +573,86 @@ test('opening a CSV record selects the trial results tab and renders imported da
       ['JP-1', 'BOOT', 'MODE'],
     );
     assert.ok(app.dom.window.document.querySelector('.jumper-table').textContent.includes('OPEN'));
+  } finally {
+    await app.cleanup();
+  }
+});
+
+test('power board PDF reports upload and preview at the end of the pre-test check tab', async () => {
+  const calls = [];
+  const record = {
+    id: 18,
+    trialNo: 'T-018',
+    projectName: '案件',
+    productNo: 'A 18',
+    registrationDate: '20261114',
+    manager: '山田太郎',
+    files: [],
+    powerBoardReport: null,
+  };
+  const equipment = {
+    boards: [{ name: 'PWS132-A', revision: '', nega: '', serialNumber: '' }],
+    instruments: [],
+    software: [
+      { name: 'テストプロ', sdFormat: 'TEST0306', version: '', checksum: '' },
+      { name: 'PWM85 基板 FPGA', sdFormat: 'XPLD0885', version: '', checksum: '' },
+      { name: 'INF267 基板 FPGA', sdFormat: 'XPLD0856', version: '', checksum: '' },
+    ],
+  };
+  const jumpers = [{ name: 'W1', setting: '1-2', confirmed: false }];
+  const fetchMock = async (url, options = {}) => {
+    const parsedUrl = new URL(url, 'http://localhost');
+    const method = options.method || 'GET';
+    calls.push({ path: parsedUrl.pathname, method, body: options.body });
+    if (parsedUrl.pathname === '/api/session') return response({ authenticated: true, username: 'operator', csrfToken: 'test-token' });
+    if (parsedUrl.pathname === '/api/records') return response([record]);
+    if (parsedUrl.pathname === '/api/records/18/equipment') return response(equipment);
+    if (parsedUrl.pathname === '/api/records/18/jumpers') return response(jumpers);
+    if (parsedUrl.pathname === '/api/equipment-config') return response({ managerChoices: ['山田太郎'], instrumentChoices: [] });
+    if (parsedUrl.pathname === '/api/records/18/power-board-report' && method === 'POST') {
+      assert.ok(options.body instanceof FormData);
+      assert.equal(options.body.get('reportFile').name, 'power-board.pdf');
+      return response({ report: { id: 71, fileName: 'power-board.pdf' } }, 201);
+    }
+    return response({ error: `Unexpected request: ${method} ${parsedUrl.pathname}` }, 404);
+  };
+  const app = await mountApp('http://localhost/?recordId=18', fetchMock);
+  try {
+    await waitFor(
+      () => app.dom.window.document.querySelector('.record-detail-tabs'),
+      'record detail was not rendered',
+    );
+    const checkTab = [...app.dom.window.document.querySelectorAll('[role="tab"]')]
+      .find((tab) => tab.textContent === '試験前チェック');
+    await click(app.dom, checkTab);
+    await waitFor(
+      () => app.dom.window.document.querySelector('.power-board-report-section'),
+      'power board report section was not rendered',
+    );
+    const reportSection = app.dom.window.document.querySelector('.power-board-report-section');
+    assert.equal(
+      app.dom.window.document.getElementById('record-detail-panel-1').lastElementChild,
+      reportSection,
+    );
+    assert.equal(reportSection.querySelector('h3').textContent, '電源基板試験成績票');
+    await chooseFile(
+      app.dom,
+      reportSection.querySelector('input[type="file"]'),
+      'power-board.pdf',
+      'application/pdf',
+      '%PDF-1.7\nsample\n%%EOF',
+    );
+    await waitFor(
+      () => reportSection.querySelector('.power-board-report-preview'),
+      'uploaded PDF preview was not rendered',
+    );
+    assert.equal(
+      reportSection.querySelector('.power-board-report-preview').getAttribute('src'),
+      '/api/records/18/power-board-report',
+    );
+    assert.ok(calls.some((call) => (
+      call.path === '/api/records/18/power-board-report' && call.method === 'POST'
+    )));
   } finally {
     await app.cleanup();
   }

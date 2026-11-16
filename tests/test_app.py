@@ -788,6 +788,12 @@ class LedgerAppTests(unittest.TestCase):
             data=self.record_data(resultFiles=(io.BytesIO(b"old"), "old.txt")),
             headers={"X-CSRF-Token": self.csrf_token},
         ).json["id"]
+        report_upload = self.client.post(
+            f"/api/records/{record_id}/power-board-report",
+            data={"reportFile": (io.BytesIO(b"%PDF-1.7\nreport\n%%EOF"), "report.pdf")},
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(report_upload.status_code, 201)
         file_id = self.client.get("/api/records").json[0]["files"][0]["id"]
         equipment = self.client.get(f"/api/records/{record_id}/equipment").json
         equipment["boards"][0]["serialNumber"] = "SERIAL-001"
@@ -1000,6 +1006,74 @@ class LedgerAppTests(unittest.TestCase):
         self.assertEqual(deletion.json["files"], [])
         self.assertEqual(self.client.get("/api/records").json[0]["files"], [])
 
+    def test_power_board_report_upload_inline_preview_and_delete(self):
+        self.assertEqual(self.client.get("/api/records/1/power-board-report").status_code, 401)
+        self.login()
+        record_id = self.client.post(
+            "/api/records",
+            data=self.record_data(),
+            headers={"X-CSRF-Token": self.csrf_token},
+        ).json["id"]
+        pdf_content = b"%PDF-1.7\nsample report\n%%EOF\n"
+        upload_data = {
+            "reportFile": (io.BytesIO(pdf_content), "power-board-report.pdf"),
+        }
+
+        upload = self.client.post(
+            f"/api/records/{record_id}/power-board-report",
+            data=upload_data,
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+
+        self.assertEqual(upload.status_code, 201)
+        report = upload.json["report"]
+        self.assertEqual(report["fileName"], "power-board-report.pdf")
+        self.assertEqual(self.client.get("/api/records").json[0]["powerBoardReport"], report)
+
+        duplicate = self.client.post(
+            f"/api/records/{record_id}/power-board-report",
+            data={"reportFile": (io.BytesIO(pdf_content), "second.pdf")},
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(duplicate.status_code, 409)
+
+        preview = self.client.get(f"/api/records/{record_id}/power-board-report")
+        self.assertEqual(preview.status_code, 200)
+        self.assertEqual(preview.mimetype, "application/pdf")
+        self.assertTrue(preview.headers["Content-Disposition"].startswith("inline;"))
+        self.assertEqual(preview.data, pdf_content)
+
+        deletion = self.client.delete(
+            f"/api/records/{record_id}/power-board-report",
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(deletion.status_code, 200)
+        self.assertIsNone(self.client.get("/api/records").json[0]["powerBoardReport"])
+        self.assertEqual(
+            self.client.get(f"/api/records/{record_id}/power-board-report").status_code,
+            404,
+        )
+
+    def test_power_board_report_rejects_non_pdf_uploads(self):
+        self.login()
+        record_id = self.client.post(
+            "/api/records",
+            data=self.record_data(),
+            headers={"X-CSRF-Token": self.csrf_token},
+        ).json["id"]
+        for filename, content in (
+            ("invalid.pdf", b"not a PDF"),
+            ("invalid.txt", b"%PDF-1.7\nsample"),
+        ):
+            with self.subTest(filename=filename):
+                response = self.client.post(
+                    f"/api/records/{record_id}/power-board-report",
+                    data={"reportFile": (io.BytesIO(content), filename)},
+                    headers={"X-CSRF-Token": self.csrf_token},
+                )
+                self.assertEqual(response.status_code, 400)
+        self.assertIsNone(self.client.get("/api/records").json[0]["powerBoardReport"])
+
     def test_rejects_record_write_without_csrf(self):
         self.login()
         response = self.client.post(
@@ -1039,6 +1113,12 @@ class LedgerAppTests(unittest.TestCase):
         record_id = response.json["id"]
         record = self.client.get("/api/records").json[0]
         file_id = record["files"][0]["id"]
+        report_upload = self.client.post(
+            f"/api/records/{record_id}/power-board-report",
+            data={"reportFile": (io.BytesIO(b"%PDF-1.7\nreport\n%%EOF"), "report.pdf")},
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(report_upload.status_code, 201)
 
         deleted = self.client.delete(
             f"/api/records/{record_id}",
@@ -1050,6 +1130,10 @@ class LedgerAppTests(unittest.TestCase):
         self.assertEqual(self.client.get("/api/records").json, [])
         self.assertEqual(
             self.client.get(f"/api/records/{record_id}/files/{file_id}").status_code,
+            404,
+        )
+        self.assertEqual(
+            self.client.get(f"/api/records/{record_id}/power-board-report").status_code,
             404,
         )
         self.assertEqual(

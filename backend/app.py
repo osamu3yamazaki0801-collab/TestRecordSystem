@@ -320,6 +320,12 @@ def create_app(test_config=None):
                     file_content_type TEXT NOT NULL,
                     file_data BLOB NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS power_board_reports (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    record_id INTEGER NOT NULL UNIQUE REFERENCES records(id) ON DELETE CASCADE,
+                    file_name TEXT NOT NULL,
+                    file_data BLOB NOT NULL
+                );
                 CREATE INDEX IF NOT EXISTS record_files_record_id_idx
                     ON record_files(record_id);
                 CREATE INDEX IF NOT EXISTS records_trial_no_idx ON records(trial_no);
@@ -689,11 +695,24 @@ def create_app(test_config=None):
                     ORDER BY id
                     """
                 ).fetchall()
+                report_rows = connection.execute(
+                    """
+                    SELECT id, record_id, file_name
+                    FROM power_board_reports
+                    """
+                ).fetchall()
             files_by_record = {}
             for file_row in file_rows:
                 files_by_record.setdefault(file_row["record_id"], []).append(
                     {"id": file_row["id"], "fileName": file_row["file_name"]}
                 )
+            reports_by_record = {
+                report_row["record_id"]: {
+                    "id": report_row["id"],
+                    "fileName": report_row["file_name"],
+                }
+                for report_row in report_rows
+            }
             result = [
                 {
                     "id": row["id"],
@@ -708,6 +727,7 @@ def create_app(test_config=None):
                         if files_by_record.get(row["id"])
                         else None
                     ),
+                    "powerBoardReport": reports_by_record.get(row["id"]),
                 }
                 for row in rows
                 if all(
@@ -1076,12 +1096,22 @@ def create_app(test_config=None):
                         (record_id,),
                     ).fetchall()
                 ]
+                saved_report = connection.execute(
+                    """
+                    SELECT id, file_name FROM power_board_reports WHERE record_id = ?
+                    """,
+                    (record_id,),
+                ).fetchone()
                 updated_record = {
                     "id": record_id,
                     **values,
                     "registrationDate": registration_date,
                     "files": saved_files,
                     "fileName": saved_files[0]["fileName"] if saved_files else None,
+                    "powerBoardReport": (
+                        {"id": saved_report["id"], "fileName": saved_report["file_name"]}
+                        if saved_report else None
+                    ),
                 }
         if combined:
             return jsonify(success=True, record=updated_record, equipment=equipment, jumperChecks=jumper_checks)
@@ -1100,6 +1130,85 @@ def create_app(test_config=None):
             if cursor.rowcount == 0:
                 abort(404)
         return jsonify(success=True)
+
+    @app.post("/api/records/<int:record_id>/power-board-report")
+    @require_login
+    @require_csrf
+    def upload_power_board_report(record_id):
+        uploads = [
+                upload for upload in request.files.getlist("reportFile")
+                if upload and upload.filename
+        ]
+        if len(uploads) != 1:
+                return jsonify(error="電源基板試験成績票のPDFファイルを1件選択してください。"), 400
+        upload = uploads[0]
+        if not upload.filename.lower().endswith(".pdf"):
+                return jsonify(error="電源基板試験成績票にはPDFファイルを選択してください。"), 400
+        content = upload.read(MAX_FILE_SIZE + 1)
+        if len(content) > MAX_FILE_SIZE:
+                return jsonify(error="添付ファイルは1件あたり100 MB以下にしてください。"), 413
+        if not content.startswith(b"%PDF-"):
+                return jsonify(error="選択したファイルは有効なPDFではありません。"), 400
+
+        file_name = upload.filename.replace("\\", "/").rsplit("/", 1)[-1]
+        file_name = "".join(char for char in file_name if char.isprintable()).strip()[:255]
+        file_name = file_name or "power-board-report.pdf"
+        with closing(connect_db()) as connection, connection:
+                connection.execute("BEGIN IMMEDIATE")
+                if not connection.execute(
+                    "SELECT id FROM records WHERE id = ?", (record_id,)
+                ).fetchone():
+                    abort(404)
+                if connection.execute(
+                    "SELECT id FROM power_board_reports WHERE record_id = ?", (record_id,)
+                ).fetchone():
+                    return jsonify(error="電源基板試験成績票は1件だけ登録できます。"), 409
+                cursor = connection.execute(
+                    """
+                    INSERT INTO power_board_reports (record_id, file_name, file_data)
+                    VALUES (?, ?, ?)
+                    """,
+                    (record_id, file_name, content),
+                )
+                report = {"id": cursor.lastrowid, "fileName": file_name}
+        return jsonify(report=report), 201
+
+    @app.get("/api/records/<int:record_id>/power-board-report")
+    @require_login
+    def get_power_board_report(record_id):
+        with closing(connect_db()) as connection:
+                row = connection.execute(
+                    """
+                    SELECT file_name, file_data
+                    FROM power_board_reports
+                    WHERE record_id = ?
+                    """,
+                    (record_id,),
+                ).fetchone()
+        if not row:
+                abort(404)
+        response = send_file(
+                BytesIO(row["file_data"]),
+                as_attachment=False,
+                download_name=row["file_name"],
+                mimetype="application/pdf",
+                max_age=0,
+        )
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+
+    @app.delete("/api/records/<int:record_id>/power-board-report")
+    @require_login
+    @require_csrf
+    def delete_power_board_report(record_id):
+        with closing(connect_db()) as connection, connection:
+                cursor = connection.execute(
+                    "DELETE FROM power_board_reports WHERE record_id = ?",
+                    (record_id,),
+                )
+                if cursor.rowcount == 0:
+                    abort(404)
+        return jsonify(report=None)
 
     @app.post("/api/records/<int:record_id>/files")
     @require_login

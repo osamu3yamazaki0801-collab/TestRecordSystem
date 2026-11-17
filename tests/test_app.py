@@ -642,7 +642,7 @@ class LedgerAppTests(unittest.TestCase):
 
         expanded = self.client.get(url).json
         self.assertEqual(expanded["instruments"][:3], legacy["instruments"])
-        self.assertTrue(all(row["revision"] == "" and row["nega"] == "" for row in expanded["boards"]))
+        self.assertEqual(expanded["boards"], legacy["boards"])
         self.assertEqual(expanded["instruments"][3:], [
             {"name": "", "managementNo": "", "testItems": ""} for _ in range(2)
         ])
@@ -652,6 +652,34 @@ class LedgerAppTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json, expanded)
+
+    def test_equipment_omits_removed_board_fields_from_stored_records(self):
+        self.login()
+        record_id = self.client.post(
+            "/api/records", data=self.record_data(),
+            headers={"X-CSRF-Token": self.csrf_token},
+        ).json["id"]
+        url = f"/api/records/{record_id}/equipment"
+        equipment = self.client.get(url).json
+        equipment["boards"][0]["serialNumber"] = "SERIAL-001"
+        legacy = json.loads(json.dumps(equipment))
+        for board in legacy["boards"]:
+            board.update(revision="R1", nega="N1")
+        with closing(sqlite3.connect(self.app.config["DATABASE_PATH"])) as connection:
+            connection.execute(
+                "INSERT INTO record_equipment (record_id, payload) VALUES (?, ?)",
+                (record_id, json.dumps(legacy)),
+            )
+            connection.commit()
+
+        loaded = self.client.get(url).json
+        self.assertEqual(loaded, equipment)
+        self.assertTrue(all(row.keys() == {"name", "serialNumber"} for row in loaded["boards"]))
+        response = self.client.put(
+            url, json=loaded, headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.client.get(url).json, equipment)
 
     def test_instrument_choices_are_loaded_from_json(self):
         self.login()
@@ -663,7 +691,7 @@ class LedgerAppTests(unittest.TestCase):
         choices = [{"name": "カスタム試験器", "managementNo": "CUSTOM-01"}]
         managers = ["カスタム担当者", "別の担当者"]
         boards = [
-            {"name": f"CUSTOM-{index}", "revision": "R1", "nega": "N1", "serialNumber": "SERIAL"}
+            {"name": f"CUSTOM-{index}", "serialNumber": "SERIAL"}
             for index in range(3)
         ]
         config_path.write_text(
@@ -712,7 +740,7 @@ class LedgerAppTests(unittest.TestCase):
     def test_equipment_config_rejects_more_than_fifty_boards(self):
         config_path = Path(self.temp_dir.name) / "too-many-boards.json"
         boards = [
-            {"name": f"BOARD-{index}", "revision": "", "nega": "", "serialNumber": ""}
+            {"name": f"BOARD-{index}", "serialNumber": ""}
             for index in range(51)
         ]
         config_path.write_text(json.dumps({"boards": boards}), encoding="utf-8")

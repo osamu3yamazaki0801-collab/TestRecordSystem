@@ -21,13 +21,13 @@
     "山崎" 
   ],
   "boards": [
-    { "name": "PWS132-A", "revision": "",  "nega": "", "serialNumber": "" },
-    { "name": "PWM89-G0",  "revision": "", "nega": "", "serialNumber": "" },
-    { "name": "PWM85-A3",  "revision": "", "nega": "", "serialNumber": "" },
-    { "name": "INF265-B0", "revision": "", "nega": "", "serialNumber": "" },
-    { "name": "MDM91-D0",  "revision": "", "nega": "", "serialNumber": "" },
-    { "name": "INF271-B0", "revision": "", "nega": "", "serialNumber": "" },
-    { "name": "INF267-A1", "revision": "", "nega": "", "serialNumber": "" }
+    { "name": "PWS132", "serialNumber": "" },
+    { "name": "PWM89",  "serialNumber": "" },
+    { "name": "PWM85",  "serialNumber": "" },
+    { "name": "INF265", "serialNumber": "" },
+    { "name": "MDM57",  "serialNumber": "" },
+    { "name": "INF271", "serialNumber": "" },
+    { "name": "INF267", "serialNumber": "" }
   ],
   "jumpers": [
     { "name": "W1", "setting": "1-2" },

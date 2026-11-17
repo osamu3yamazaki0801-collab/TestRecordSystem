@@ -1732,15 +1732,8 @@ tbody tr:last-child td {
   min-width: 392px;
 }
 
-.equipment-table--boards th:first-child { width: 28%; }
-.equipment-table--boards th:nth-child(2),
-.equipment-table--boards th:nth-child(3) { width: 19.5%; }
-.equipment-table--boards th:nth-child(4) { width: 33%; }
-
-.equipment-table input.equipment-short-input {
-  width: 6ch;
-  max-width: 100%;
-}
+.equipment-table--boards th:first-child { width: 40%; }
+.equipment-table--boards th:nth-child(2) { width: 60%; }
 
 .equipment-table-wrap:has(> .equipment-table--instruments) {
   width: 46%;

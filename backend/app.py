@@ -29,7 +29,7 @@ MAX_INSTRUMENT_CHOICES = 50
 MAX_MANAGER_CHOICES = 100
 MAX_JUMPERS = 50
 DEFAULT_BOARD_DEFAULTS = [
-    {"name": name, "revision": "", "nega": "", "serialNumber": ""}
+    {"name": name, "serialNumber": ""}
     for name in (
         "PWS132-A", "PWM89-G0", "PWM85-A3", "INF265-B0",
         "MDM91-D0", "INF271-B0", "INF267-A1",
@@ -103,23 +103,16 @@ def load_equipment_config(config_path):
     for board in boards:
         if (
             not isinstance(board, dict)
-            or board.keys() != {"name", "revision", "nega", "serialNumber"}
+            or board.keys() != {"name", "serialNumber"}
             or not isinstance(board["name"], str)
             or not board["name"].strip()
             or len(board["name"]) > 100
             or board["name"] in board_names
-            or any(
-                not isinstance(board[field], str)
-                for field in ("revision", "nega", "serialNumber")
-            )
-            or any(
-                not re.fullmatch(r"[A-Za-z0-9]{0,5}", board[field])
-                for field in ("revision", "nega")
-            )
+            or not isinstance(board["serialNumber"], str)
             or len(board["serialNumber"]) > 100
         ):
             raise ValueError(
-                "各boards項目には一意なname、revision、nega、serialNumberを設定してください。"
+                "各boards項目には一意なnameとserialNumberを設定してください（各100文字以内）。"
             )
         board_names.add(board["name"])
     jumpers = config.get("jumpers", DEFAULT_JUMPERS)
@@ -187,21 +180,12 @@ def validate_equipment(data, board_defaults=DEFAULT_BOARD_DEFAULTS):
             return "機器情報の行数が正しくありません。"
         for index, row in enumerate(rows):
             expected = expected_rows[0] if group == "instruments" else expected_rows[index]
-            legacy_board_keys = {"name", "serialNumber"}
-            if not isinstance(row, dict) or (
-                row.keys() != expected.keys()
-                and not (group == "boards" and row.keys() == legacy_board_keys)
-            ):
+            if not isinstance(row, dict) or row.keys() != expected.keys():
                 return "機器情報の項目が正しくありません。"
             if any(not isinstance(value, str) or len(value) > 100 for value in row.values()):
                 return "各項目は100文字以内の文字列で入力してください。"
             if any(row[field] != expected[field] for field in fixed_fields[group]):
                 return "基板名・ソフト名・SD形式は変更できません。"
-            if group == "boards" and any(
-                not re.fullmatch(r"[A-Za-z0-9]{0,5}", row.get(field, ""))
-                for field in ("revision", "nega")
-            ):
-                return "レビジョン・ネガは半角英数字5文字以内で入力してください。"
     return None
 
 
@@ -216,8 +200,10 @@ def normalize_equipment(data, board_defaults=DEFAULT_BOARD_DEFAULTS):
         **data,
         "boards": [
             {
-                **default,
-                **(data["boards"][index] if index < len(data["boards"]) else {}),
+                "serialNumber": (
+                    data["boards"][index].get("serialNumber", default["serialNumber"])
+                    if index < len(data["boards"]) else default["serialNumber"]
+                ),
                 "name": default["name"],
             }
             for index, default in enumerate(board_defaults)

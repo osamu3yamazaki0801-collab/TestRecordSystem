@@ -359,7 +359,7 @@ test('opening a CSV record selects the trial results tab and renders imported da
     { name: 'MODE', setting: 'LOW', confirmed: false },
   ];
   const equipment = {
-    boards: [{ name: 'PWS132-A', revision: '', nega: '', serialNumber: '' }],
+    boards: [{ name: 'PWS132-A', serialNumber: '' }],
     instruments: [{ name: '', managementNo: '', testItems: '' }],
     software: [
       { name: 'テストプロ', sdFormat: 'TEST0306', version: '', checksum: '' },
@@ -561,6 +561,19 @@ test('opening a CSV record selects the trial results tab and renders imported da
       }));
     });
 
+    const infoTab = [...app.dom.window.document.querySelectorAll('.record-detail-tabs [role="tab"]')]
+      .find((tab) => tab.textContent === '試験情報');
+    await click(app.dom, infoTab);
+    const boardTable = app.dom.window.document.querySelector('.equipment-table--boards');
+    assert.deepEqual(
+      [...boardTable.querySelectorAll('thead th')].map((header) => header.textContent),
+      ['基板名', 'シリアル No.'],
+    );
+    assert.equal(boardTable.querySelectorAll('tbody input').length, 1);
+    const serialInput = boardTable.querySelector('input[aria-label="PWS132-A シリアル No."]');
+    await enterText(app.dom, serialInput, 'SERIAL-001');
+    assert.equal(serialInput.value, 'SERIAL-001');
+
     const checkTab = [...app.dom.window.document.querySelectorAll('[role="tab"]')]
       .find((tab) => tab.textContent === '試験前チェック');
     await click(app.dom, checkTab);
@@ -591,7 +604,7 @@ test('power board PDF reports upload and preview at the end of the pre-test chec
     powerBoardReport: null,
   };
   const equipment = {
-    boards: [{ name: 'PWS132-A', revision: '', nega: '', serialNumber: '' }],
+    boards: [{ name: 'PWS132-A', serialNumber: '' }],
     instruments: [],
     software: [
       { name: 'テストプロ', sdFormat: 'TEST0306', version: '', checksum: '' },

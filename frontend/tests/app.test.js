@@ -746,6 +746,10 @@ test('appearance inspection checks cancel, save and retain input on failure with
       .find((tab) => tab.textContent === '受入検査');
     await click(app.dom, acceptanceTab);
     const panel = document.getElementById('record-detail-panel-1');
+    assert.deepEqual(
+      [...panel.querySelectorAll('h3')].map((heading) => heading.textContent),
+      ['外観確認', 'ジャンパ設定', 'インストールソフト', 'PLDバージョン', '電源基板試験成績票'],
+    );
     const section = panel.querySelector('.appearance-inspection');
     assert.equal(panel.firstElementChild, section);
     const table = section.querySelector('table');

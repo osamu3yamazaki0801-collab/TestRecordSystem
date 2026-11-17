@@ -34,32 +34,27 @@
     { "name": "INF271", "serialNumber": "" },
     { "name": "INF267", "serialNumber": "" }
   ],
-  "jumpers": [
-    { "name": "W1", "setting": "1-2" },
-    { "name": "W2", "setting": "OPEN" },
-    { "name": "W3", "setting": "CLOSE" }
-  ],
   "appearanceInspection": {
     "boardGroups": [
       { "name": "PWS132", "boards": ["PWS132"] },
-      { "name": "PWM89", "boards": ["PWM85", "AUX120","INF265", "MDM57", "INF271"] },
+      { "name": "PWM89", "boards": ["PWM89", "PWM85", "AUX120","INF265", "MDM57", "INF271"] },
       { "name": "INF267", "boards": ["INF267"] }
     ],
     "items": [
       {
         "key": "boardRevision", "name": "基板レビジョン", "rows": 2,
         "values": {
-          "PWS132": "A", "PWM85": "A4", "AUX120": "C1", "INF265": "B0",
+          "PWS132": "A", "PWM89": "H0", "PWM85": "A4", "AUX120": "C1", "INF265": "B0",
           "MDM57": "A2", "INF271": "D0", "INF267": "B0"
         }
       },
       {
         "key": "frontPanel", "name": "フロントパネルの銘板", "rows": 2,
-        "values": { "PWS132": "PWS", "PWM85": "PWM-1", "INF267": "INF-1" }
+        "values": { "PWS132": "PWS", "PWM89": "PWM-1", "INF267": "INF-1" }
       },
       {
         "key": "boardFit", "name": "組合せ基板の勘合", "rows": 1,
-        "values": { "INF265": "", "MDM57": "", "INF271": "" }
+        "values": { "AUX120": "", "INF265": "", "MDM57": "", "INF271": "" }
       },
       {
         "key": "screws", "name": "ネジの締付けの確認", "rows": 1,
@@ -69,6 +64,15 @@
       { "key": "dustCap", "name": "MDM57防塵キャップ実装確認", "rows": 1, "values": { "MDM57": "" } }
     ]
   },
+  "jumpers": [
+    { "name": "PWM85-W1",  "setting": "1-2" },
+    { "name": "PWW85-W2",  "setting": "1-2" },
+    { "name": "MDM57-JP1", "setting": "CLOSE" },
+    { "name": "MDM57-JP2", "setting": "CLOSE" },
+    { "name": "MDM57-JP3", "setting": "CLOSE" },
+    { "name": "MDM57-JP4", "setting": "CLOSE" },
+    { "name": "MDM57-JP5", "setting": "CLOSE" }
+  ],
   "instrumentChoices": [
     {
       "name": "自動試験器",

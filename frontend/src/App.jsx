@@ -1411,7 +1411,6 @@ function RecordDetails({ record, onClose, recordDirty, registering, registration
           {index === 1 && (
             <>
               <AppearanceInspection appearance={appearance} setAppearance={setAppearance} disabled={registering} onDirty={onDirty} />
-              <EquipmentForm equipment={equipment} setEquipment={setEquipment} disabled={registering} onDirty={onDirty} groupKeys={['software']} />
               <h3 className="jumper-heading">ジャンパ設定</h3>
               {jumpers ? (
                 <div className="equipment-table-wrap jumper-table-wrap">
@@ -1441,6 +1440,7 @@ function RecordDetails({ record, onClose, recordDirty, registering, registration
                   </table>
                 </div>
               ) : <Message>読み込み中...</Message>}
+              <EquipmentForm equipment={equipment} setEquipment={setEquipment} disabled={registering} onDirty={onDirty} groupKeys={['software']} />
               <section className="power-board-report-section" aria-labelledby="power-board-report-title">
                 <h3 id="power-board-report-title">電源基板試験成績票</h3>
                 {record.powerBoardReport ? (

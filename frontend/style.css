@@ -1721,6 +1721,52 @@ tbody tr:last-child td {
   border-left: 1px solid var(--border);
 }
 
+.appearance-table-wrap {
+  width: fit-content;
+  max-width: 100%;
+}
+
+.appearance-table {
+  width: var(--appearance-table-width);
+  min-width: var(--appearance-table-width);
+}
+
+.appearance-table .appearance-number-column { width: 32px; }
+.appearance-table .appearance-item-column { width: 248px; }
+
+.appearance-table th,
+.appearance-table td {
+  padding: 2px 4px;
+  text-align: center;
+  border: 1px solid var(--border);
+}
+
+.appearance-table tbody:not(:last-of-type) > tr:last-child > th,
+.appearance-table tbody:not(:last-of-type) > tr:last-child > td,
+.appearance-table tbody:not(:last-of-type) > tr:first-child > [rowspan="2"] {
+  border-bottom: 1px solid #849a9f;
+}
+
+.appearance-table tbody + tbody > tr:first-child > th,
+.appearance-table tbody + tbody > tr:first-child > td {
+  border-top: 1px solid #849a9f;
+}
+
+.appearance-table tbody th {
+  text-align: left;
+  font-weight: normal;
+  color: var(--text);
+  background: #fff;
+}
+
+.appearance-table .appearance-expected {
+  padding: 4px 0;
+}
+
+.appearance-inline-value {
+  margin-right: 4px;
+}
+
 .equipment-table-wrap:has(> .equipment-table--boards) {
   width: fit-content;
   min-width: min(100%, 392px);

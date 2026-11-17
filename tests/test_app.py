@@ -781,6 +781,149 @@ class LedgerAppTests(unittest.TestCase):
                 "DATABASE_PATH": str(Path(self.temp_dir.name) / "invalid.sqlite3"),
             })
 
+    def test_appearance_config_adds_rows_and_preserves_only_matching_checks(self):
+        self.login()
+        record_id = self.client.post(
+            "/api/records", data=self.record_data(),
+            headers={"X-CSRF-Token": self.csrf_token},
+        ).json["id"]
+        url = f"/api/records/{record_id}/appearance-checks"
+        appearance = self.client.get(url).json
+        checks = appearance.pop("checks")
+        equipment = self.client.get(f"/api/records/{record_id}/equipment").json
+        checks["boardRevision:PWS132"] = True
+        checks["sdCard:PWM85"] = True
+        data = self.record_data(
+            equipment=json.dumps(equipment),
+            jumperChecks=json.dumps({"W1": False, "W2": False}),
+            appearanceChecks=json.dumps(checks),
+        )
+        self.assertEqual(self.client.put(
+            f"/api/records/{record_id}/details", data=data,
+            headers={"X-CSRF-Token": self.csrf_token},
+        ).status_code, 200)
+
+        appearance["boardGroups"].append({"name": "AUX", "boards": ["AUX"]})
+        appearance["items"][0]["values"]["PWS132"] = "B"
+        appearance["items"][4]["rows"] = 2
+        appearance["items"] = appearance["items"][4:] + appearance["items"][:4]
+        appearance["items"].extend([
+            {"key": "seal", "name": "封印確認", "rows": 1, "values": {"AUX": "OK"}},
+            {"key": "packing", "name": "梱包確認", "rows": 2, "values": {"AUX": ""}},
+        ])
+        config_path = Path(self.app.config["EQUIPMENT_CONFIG_PATH"])
+        config_path.write_text(json.dumps({
+            "jumpers": self.app.config["JUMPERS"], "appearanceInspection": appearance,
+        }), encoding="utf-8")
+        configured_app = create_app(dict(self.app.config))
+        client = configured_app.test_client()
+        with client.session_transaction() as session:
+            session["username"] = "operator"
+        loaded = client.get(url).json
+        self.assertEqual(loaded["boardGroups"], appearance["boardGroups"])
+        self.assertEqual(loaded["items"], appearance["items"])
+        self.assertFalse(loaded["checks"]["boardRevision:PWS132"])
+        self.assertTrue(loaded["checks"]["sdCard:PWM85"])
+        self.assertFalse(loaded["checks"]["seal:AUX"])
+        self.assertFalse(loaded["checks"]["packing:AUX"])
+        loaded["checks"]["seal:AUX"] = True
+        data["appearanceChecks"] = json.dumps(loaded["checks"])
+        csrf = client.get("/api/session").json["csrfToken"]
+        response = client.put(
+            f"/api/records/{record_id}/details", data=data, headers={"X-CSRF-Token": csrf},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(client.get(url).json["checks"], loaded["checks"])
+
+        appearance["items"] = []
+        config_path.write_text(json.dumps({"appearanceInspection": appearance}), encoding="utf-8")
+        empty_client = create_app(dict(self.app.config)).test_client()
+        with empty_client.session_transaction() as session:
+            session["username"] = "operator"
+        self.assertEqual(empty_client.get(url).json["items"], [])
+        self.assertEqual(empty_client.get(url).json["checks"], {})
+
+    def test_appearance_config_validates_structure_and_limits(self):
+        base = {
+            "boardGroups": [{"name": "GROUP", "boards": ["A", "B"]}],
+            "items": [{"key": "inspect", "name": "外観", "rows": 1, "values": {"A": ""}}],
+        }
+        invalid_configs = [
+            None, [], {}, {**base, "boardGroups": []},
+            {**base, "boardGroups": [{"name": "GROUP", "boards": ["A", "A"]}]},
+            {**base, "boardGroups": [{"name": "GROUP", "boards": ["A"]}] * 2},
+            {**base, "boardGroups": [{"name": "GROUP", "boards": [""]}]},
+            {**base, "boardGroups": [{"name": "GROUP", "boards": ["B" + str(i) for i in range(51)]}]},
+            {**base, "boardGroups": [
+                {"name": "G1", "boards": ["B" + str(i) for i in range(50)]},
+                {"name": "G2", "boards": ["EXTRA"]},
+            ]},
+            {**base, "items": None},
+            {**base, "items": base["items"] * 2},
+            {**base, "items": [
+                {**base["items"][0], "key": f"item{i}"} for i in range(51)
+            ]},
+        ]
+        for field, invalid_values in (
+            ("key", ["", "bad:key", "1key", "x" * 51]),
+            ("name", ["", " name ", "名" * 101]),
+            ("rows", [0, 3, True, 1.0, "2", None]),
+            ("values", [[], {"UNKNOWN": ""}, {"A": None}, {"A": "x" * 101}]),
+        ):
+            for value in invalid_values:
+                invalid_configs.append({**base, "items": [{**base["items"][0], field: value}]})
+        config_path = Path(self.temp_dir.name) / "appearance-config.json"
+        config = {**self.app.config, "EQUIPMENT_CONFIG_PATH": str(config_path)}
+        for appearance in invalid_configs:
+            with self.subTest(appearance=appearance):
+                config_path.write_text(json.dumps({"appearanceInspection": appearance}), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "appearanceInspection"):
+                    create_app(config)
+        maximum = {
+            "boardGroups": [{"name": "GROUP", "boards": [f"B{i}" for i in range(50)]}],
+            "items": [
+                {"key": f"item{i}", "name": "外観", "rows": 1, "values": {"B0": ""}}
+                for i in range(50)
+            ],
+        }
+        config_path.write_text(json.dumps({"appearanceInspection": maximum}), encoding="utf-8")
+        self.assertEqual(create_app(config).config["APPEARANCE_INSPECTION"], maximum)
+
+    def test_appearance_config_migrates_legacy_checks_using_original_settings(self):
+        self.login()
+        record_id = self.client.post(
+            "/api/records", data=self.record_data(),
+            headers={"X-CSRF-Token": self.csrf_token},
+        ).json["id"]
+        url = f"/api/records/{record_id}/appearance-checks"
+        appearance = self.client.get(url).json
+        appearance.pop("checks")
+        appearance["items"][0]["values"]["PWS132"] = "B"
+        Path(self.app.config["EQUIPMENT_CONFIG_PATH"]).write_text(
+            json.dumps({"appearanceInspection": appearance}), encoding="utf-8",
+        )
+        with closing(sqlite3.connect(self.app.config["DATABASE_PATH"])) as connection, connection:
+            connection.executescript("""
+                DROP TABLE appearance_checks;
+                CREATE TABLE appearance_checks (
+                    record_id INTEGER NOT NULL REFERENCES records(id) ON DELETE CASCADE,
+                    check_key TEXT NOT NULL,
+                    confirmed INTEGER NOT NULL CHECK (confirmed IN (0, 1)),
+                    PRIMARY KEY (record_id, check_key)
+                );
+            """)
+            connection.executemany(
+                "INSERT INTO appearance_checks (record_id, check_key, confirmed) VALUES (?, ?, 1)",
+                [(record_id, "boardRevision:PWS132"), (record_id, "dustCap:MDM57")],
+            )
+        for _ in range(2):
+            restarted = create_app(dict(self.app.config)).test_client()
+            with restarted.session_transaction() as session:
+                session["username"] = "operator"
+            checks = restarted.get(url).json["checks"]
+            self.assertFalse(checks["boardRevision:PWS132"])
+            self.assertTrue(checks["dustCap:MDM57"])
+
     def test_equipment_requires_authentication_and_valid_fields(self):
         self.assertEqual(self.client.get("/api/records/1/equipment").status_code, 401)
         self.assertEqual(self.client.get("/api/equipment-config").status_code, 401)
@@ -827,11 +970,16 @@ class LedgerAppTests(unittest.TestCase):
         equipment["boards"][0]["serialNumber"] = "SERIAL-001"
         equipment["instruments"][0]["name"] = "オシロスコープ"
         equipment["software"][0]["version"] = "1.2"
+        appearance_url = f"/api/records/{record_id}/appearance-checks"
+        appearance = self.client.get(appearance_url).json
+        self.assertTrue(all(value is False for value in appearance["checks"].values()))
+        appearance["checks"]["boardRevision:PWS132"] = True
         response = self.client.put(
             f"/api/records/{record_id}/details",
             data=self.record_data(
                 projectName="一括変更案件", equipment=json.dumps(equipment),
                 jumperChecks=json.dumps({"W1": True, "W2": False}),
+                appearanceChecks=json.dumps(appearance["checks"]),
                 removeFileIds=str(file_id),
                 resultFiles=(io.BytesIO(SAMPLE_RESULTS_CSV.encode("utf-8")), "new.csv"),
             ),
@@ -843,6 +991,8 @@ class LedgerAppTests(unittest.TestCase):
         self.assertEqual(response.json["record"], record)
         self.assertEqual(response.json["equipment"], equipment)
         self.assertEqual(response.json["jumperChecks"], {"W1": True, "W2": False})
+        self.assertEqual(response.json["appearanceChecks"], appearance["checks"])
+        self.assertEqual(self.client.get(appearance_url).json, appearance)
         self.assertEqual([file["fileName"] for file in record["files"]], ["new.csv"])
         self.assertEqual(self.client.get(f"/api/records/{record_id}/equipment").json, equipment)
         self.assertEqual(
@@ -855,6 +1005,62 @@ class LedgerAppTests(unittest.TestCase):
             session["username"] = "operator"
         self.assertEqual(restarted.get(f"/api/records/{record_id}/equipment").json, equipment)
         self.assertTrue(restarted.get(f"/api/records/{record_id}/jumpers").json[0]["confirmed"])
+        self.assertEqual(restarted.get(appearance_url).json, appearance)
+
+        legacy_save = self.client.put(
+            f"/api/records/{record_id}/details",
+            data=self.record_data(
+                equipment=json.dumps(equipment),
+                jumperChecks=json.dumps({"W1": True, "W2": False}),
+            ),
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(legacy_save.status_code, 200)
+        self.assertEqual(self.client.get(appearance_url).json, appearance)
+
+        appearance["checks"]["boardRevision:PWS132"] = False
+        unchecked = self.client.put(
+            f"/api/records/{record_id}/details",
+            data=self.record_data(
+                equipment=json.dumps(equipment),
+                jumperChecks=json.dumps({"W1": True, "W2": False}),
+                appearanceChecks=json.dumps(appearance["checks"]),
+            ),
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(unchecked.status_code, 200)
+        self.assertEqual(self.client.get(appearance_url).json, appearance)
+
+    def test_appearance_checks_are_private_and_scoped_to_records(self):
+        self.assertEqual(self.client.get("/api/records/1/appearance-checks").status_code, 401)
+        self.login()
+        self.assertEqual(self.client.get("/api/records/999999/appearance-checks").status_code, 404)
+        record_ids = [
+            self.client.post(
+                "/api/records", data=self.record_data(),
+                headers={"X-CSRF-Token": self.csrf_token},
+            ).json["id"]
+            for _ in range(2)
+        ]
+        checks = self.client.get(f"/api/records/{record_ids[0]}/appearance-checks").json["checks"]
+        checks["dustCap:MDM57"] = True
+        response = self.client.put(
+            f"/api/records/{record_ids[0]}/details",
+            data=self.record_data(
+                equipment=json.dumps(self.client.get(f"/api/records/{record_ids[0]}/equipment").json),
+                jumperChecks=json.dumps({"W1": False, "W2": False}),
+                appearanceChecks=json.dumps(checks),
+            ),
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(response.status_code, 200)
+        other = self.client.get(f"/api/records/{record_ids[1]}/appearance-checks").json
+        self.assertTrue(all(value is False for value in other["checks"].values()))
+        self.client.delete(
+            f"/api/records/{record_ids[0]}", headers={"X-CSRF-Token": self.csrf_token},
+        )
+        with closing(sqlite3.connect(self.app.config["DATABASE_PATH"])) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM appearance_checks").fetchone()[0], 0)
 
     def test_unified_details_rejects_invalid_input_without_partial_save(self):
         self.login()
@@ -866,6 +1072,9 @@ class LedgerAppTests(unittest.TestCase):
         original = self.client.get("/api/records").json[0]
         equipment = self.client.get(f"/api/records/{record_id}/equipment").json
         jumpers = self.client.get(f"/api/records/{record_id}/jumpers").json
+        appearance_url = f"/api/records/{record_id}/appearance-checks"
+        appearance = self.client.get(appearance_url).json
+        checked = {key: True for key in appearance["checks"]}
         invalid_equipment = json.loads(json.dumps(equipment))
         invalid_equipment["boards"][0]["name"] = "OTHER"
         for extra in (
@@ -873,6 +1082,12 @@ class LedgerAppTests(unittest.TestCase):
             {"equipment": json.dumps(invalid_equipment)},
             {"jumperChecks": json.dumps({"W1": True})},
             {"jumperChecks": json.dumps({"W1": 1, "W2": False})},
+            {"appearanceChecks": "not-json"},
+            {"appearanceChecks": "null"},
+            {"appearanceChecks": json.dumps({})},
+            {"appearanceChecks": json.dumps({**checked, "unknown:PWS132": True})},
+            {"appearanceChecks": json.dumps({**checked, "boardRevision:PWS132": 1})},
+            {"appearanceChecks": json.dumps({**checked, "frontPanel:INF265": True})},
             {"registrationDate": "20260230"},
             {"removeFileIds": "999999"},
         ):
@@ -880,6 +1095,7 @@ class LedgerAppTests(unittest.TestCase):
                 data = self.record_data(
                     projectName="保存されない案件", equipment=json.dumps(equipment),
                     jumperChecks=json.dumps({"W1": True, "W2": True}),
+                    appearanceChecks=json.dumps(checked),
                     removeFileIds=str(original["files"][0]["id"]),
                     resultFiles=(io.BytesIO(SAMPLE_RESULTS_CSV.encode("utf-8")), "replacement.csv"),
                 )
@@ -892,6 +1108,7 @@ class LedgerAppTests(unittest.TestCase):
                 self.assertEqual(self.client.get("/api/records").json[0], original)
                 self.assertEqual(self.client.get(f"/api/records/{record_id}/equipment").json, equipment)
                 self.assertEqual(self.client.get(f"/api/records/{record_id}/jumpers").json, jumpers)
+                self.assertEqual(self.client.get(appearance_url).json, appearance)
         self.assertEqual(self.client.put(f"/api/records/{record_id}/details", data={}).status_code, 400)
         self.assertEqual(self.client.put(
             "/api/records/999999/details",
@@ -909,13 +1126,16 @@ class LedgerAppTests(unittest.TestCase):
         equipment = self.client.get(f"/api/records/{record_id}/equipment").json
         modified_equipment = json.loads(json.dumps(equipment))
         modified_equipment["boards"][0]["serialNumber"] = "NOT-SAVED"
+        appearance_url = f"/api/records/{record_id}/appearance-checks"
+        appearance = self.client.get(appearance_url).json
         original_connect = sqlite3.connect
 
         class FailingConnection(sqlite3.Connection):
             def executemany(self, statement, parameters):
-                if "INSERT INTO jumper_checks" in statement:
-                    raise sqlite3.OperationalError("test failure after equipment save")
-                return super().executemany(statement, parameters)
+                result = super().executemany(statement, parameters)
+                if "INSERT INTO appearance_checks" in statement:
+                    raise sqlite3.OperationalError("test failure after appearance save")
+                return result
 
         with patch("backend.app.sqlite3.connect", side_effect=lambda *args, **kwargs: original_connect(*args, factory=FailingConnection, **kwargs)):
             with self.assertRaises(sqlite3.OperationalError):
@@ -924,6 +1144,7 @@ class LedgerAppTests(unittest.TestCase):
                     data=self.record_data(
                         projectName="保存されない案件", equipment=json.dumps(modified_equipment),
                         jumperChecks=json.dumps({"W1": True, "W2": True}),
+                        appearanceChecks=json.dumps({key: True for key in appearance["checks"]}),
                         removeFileIds=str(original["files"][0]["id"]),
                         resultFiles=(io.BytesIO(SAMPLE_RESULTS_CSV.encode("utf-8")), "replacement.csv"),
                     ),
@@ -932,6 +1153,7 @@ class LedgerAppTests(unittest.TestCase):
         self.assertEqual(self.client.get("/api/records").json[0], original)
         self.assertEqual(self.client.get(f"/api/records/{record_id}/equipment").json, equipment)
         self.assertTrue(all(not jumper["confirmed"] for jumper in self.client.get(f"/api/records/{record_id}/jumpers").json))
+        self.assertEqual(self.client.get(appearance_url).json, appearance)
         self.assertEqual(self.app.test_client().put(f"/api/records/{record_id}/details", data={}).status_code, 401)
 
     def test_trial_results_csv_saved_and_preview_apis(self):

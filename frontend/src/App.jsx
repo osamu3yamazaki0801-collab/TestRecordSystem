@@ -330,7 +330,8 @@ function App() {
   const [instrumentChoices, setInstrumentChoices] = useState([]);
   const [managerChoices, setManagerChoices] = useState(null);
   const [detailJumpers, setDetailJumpers] = useState(null);
-  const savedDetails = useRef({ equipment: null, jumpers: null });
+  const [detailAppearance, setDetailAppearance] = useState(null);
+  const savedDetails = useRef({ equipment: null, jumpers: null, appearance: null });
   const [detailMessage, setDetailMessage] = useState({ text: '', type: '' });
   const [recordDirty, setRecordDirty] = useState(false);
 
@@ -434,7 +435,8 @@ function App() {
       apiRequest(`/api/records/${detailRecordId}/equipment`, csrfToken.current),
       apiRequest(`/api/records/${detailRecordId}/jumpers`, csrfToken.current),
       apiRequest('/api/equipment-config', csrfToken.current),
-    ]).then(([result, equipment, jumpers, config]) => {
+      apiRequest(`/api/records/${detailRecordId}/appearance-checks`, csrfToken.current),
+    ]).then(([result, equipment, jumpers, config, appearance]) => {
       if (!active) return;
       const record = result.find((item) => String(item.id) === detailRecordId);
       if (!record) {
@@ -446,7 +448,8 @@ function App() {
       setInstrumentChoices(config.instrumentChoices);
       setManagerChoices(config.managerChoices);
       setDetailJumpers(jumpers);
-      savedDetails.current = { equipment, jumpers };
+      setDetailAppearance(appearance);
+      savedDetails.current = { equipment, jumpers, appearance };
       setDetailMessage({ text: '', type: '' });
     }).catch((error) => {
       if (!active) return;
@@ -521,7 +524,8 @@ function App() {
     setRecordDirty(false);
     setDetailEquipment(null);
     setDetailJumpers(null);
-    savedDetails.current = { equipment: null, jumpers: null };
+    setDetailAppearance(null);
+    savedDetails.current = { equipment: null, jumpers: null, appearance: null };
   }
 
   // ログイン処理。
@@ -583,7 +587,7 @@ function App() {
     const formData = new FormData(form);
     const isEditing = editingRecordId !== null;
     if (isEditing) {
-      if (!detailEquipment || !detailJumpers) {
+      if (!detailEquipment || !detailJumpers || !detailAppearance) {
         setRegisterMessage({ text: '詳細情報の読み込みが完了していません。', type: 'error' });
         return;
       }
@@ -597,6 +601,7 @@ function App() {
       formData.set('jumperChecks', JSON.stringify(Object.fromEntries(
         detailJumpers.map((jumper) => [jumper.name, jumper.confirmed]),
       )));
+      formData.set('appearanceChecks', JSON.stringify(detailAppearance.checks));
     }
     const fieldNames = ['trialNo', 'projectName', 'productNo', 'registrationDate', 'manager'];
     const valuesList = isEditing
@@ -671,9 +676,11 @@ function App() {
       if (isEditing) {
         handleEditRecord(result.record);
         const updatedJumpers = detailJumpers.map((jumper) => ({ ...jumper, confirmed: result.jumperChecks[jumper.name] }));
+        const updatedAppearance = { ...detailAppearance, checks: result.appearanceChecks };
         setDetailEquipment(result.equipment);
         setDetailJumpers(updatedJumpers);
-        savedDetails.current = { equipment: result.equipment, jumpers: updatedJumpers };
+        setDetailAppearance(updatedAppearance);
+        savedDetails.current = { equipment: result.equipment, jumpers: updatedJumpers, appearance: updatedAppearance };
       } else {
         const createdRecords = result.records || [{
           id: result.id,
@@ -795,6 +802,7 @@ function App() {
       handleEditRecord(detailRecord);
       setDetailEquipment(savedDetails.current.equipment);
       setDetailJumpers(savedDetails.current.jumpers);
+      setDetailAppearance(savedDetails.current.appearance);
     } else {
       if (recordDirty && !window.confirm('未保存の入力を破棄して記録の検索画面へ移動しますか？')) return;
       clearRegistrationDraft();
@@ -861,6 +869,8 @@ function App() {
             setEquipment={setDetailEquipment}
             jumpers={detailJumpers}
             setJumpers={setDetailJumpers}
+            appearance={detailAppearance}
+            setAppearance={setDetailAppearance}
             onDirty={() => setRecordDirty(true)}
             cancelRegister={cancelRegister}
             registerMessage={registerMessage}
@@ -1151,7 +1161,7 @@ function RegistrationForm({ registerForm, handleRegister, registrationRows, setR
   );
 }
 
-function RecordDetails({ record, onClose, recordDirty, registering, registrationForm, equipment, instrumentChoices, setEquipment, jumpers, setJumpers, onDirty, cancelRegister, registerMessage, pendingFiles, existingFiles, onFilesChanged, onPowerBoardReportChanged, csrfToken, setAuthenticated, setLoginError }) {
+function RecordDetails({ record, onClose, recordDirty, registering, registrationForm, equipment, instrumentChoices, setEquipment, jumpers, setJumpers, appearance, setAppearance, onDirty, cancelRegister, registerMessage, pendingFiles, existingFiles, onFilesChanged, onPowerBoardReportChanged, csrfToken, setAuthenticated, setLoginError }) {
   const [activeTab, setActiveTab] = useState(() => (
     existingFiles.some((file) => /\.csv$/i.test(file.fileName)) ? 2 : 0
   ));
@@ -1163,7 +1173,7 @@ function RecordDetails({ record, onClose, recordDirty, registering, registration
   const dividerDrag = useRef(null);
   const detailTabs = [
     '試験情報',
-    '試験前チェック',
+    '受入検査',
     '試験結果',
   ];
 
@@ -1343,7 +1353,7 @@ function RecordDetails({ record, onClose, recordDirty, registering, registration
         {registrationForm}
         <div className="button-row">
           {recordDirty && <span className="status-text warning">未保存</span>}
-          <button type="submit" form="record-edit-form" className="primary-button" disabled={registering || fileActionPending || reportActionPending || !equipment || !jumpers}>
+          <button type="submit" form="record-edit-form" className="primary-button" disabled={registering || fileActionPending || reportActionPending || !equipment || !jumpers || !appearance}>
             {registering ? '保存中...' : '保存'}
           </button>
           <button type="button" className="secondary-button" disabled={registering || fileActionPending || reportActionPending} onClick={cancelRegister}>キャンセル</button>
@@ -1400,6 +1410,7 @@ function RecordDetails({ record, onClose, recordDirty, registering, registration
           {index === 0 && <EquipmentForm equipment={equipment} instrumentChoices={instrumentChoices} setEquipment={setEquipment} disabled={registering} onDirty={onDirty} groupKeys={['boards', 'instruments']} />}
           {index === 1 && (
             <>
+              <AppearanceInspection appearance={appearance} setAppearance={setAppearance} disabled={registering} onDirty={onDirty} />
               <EquipmentForm equipment={equipment} setEquipment={setEquipment} disabled={registering} onDirty={onDirty} groupKeys={['software']} />
               <h3 className="jumper-heading">ジャンパ設定</h3>
               {jumpers ? (
@@ -1414,19 +1425,15 @@ function RecordDetails({ record, onClose, recordDirty, registering, registration
                           <td>{jumper.name}</td>
                           <td>{jumper.setting}</td>
                           <td>
-                            <label className="jumper-check" title={`${jumper.name}：${jumper.confirmed ? '確認済み' : '未確認'}`}>
-                              <input
-                                type="checkbox"
-                                aria-label={`${jumper.name}の設定を確認`}
-                                checked={jumper.confirmed}
-                                disabled={registering}
-                                onChange={() => {
-                                  setJumpers((current) => current.map((item) => item.name === jumper.name ? { ...item, confirmed: !item.confirmed } : item));
-                                  onDirty();
-                                }}
-                              />
-                              <span aria-hidden="true">{jumper.confirmed ? '\u2705' : '\u25a1'}</span>
-                            </label>
+                            <ConfirmationCheckbox
+                              label={`${jumper.name}の設定を確認`}
+                              checked={jumper.confirmed}
+                              disabled={registering}
+                              onChange={() => {
+                                setJumpers((current) => current.map((item) => item.name === jumper.name ? { ...item, confirmed: !item.confirmed } : item));
+                                onDirty();
+                              }}
+                            />
                           </td>
                         </tr>
                       ))}
@@ -1516,6 +1523,113 @@ function RecordDetails({ record, onClose, recordDirty, registering, registration
           )}
         </div>
       ))}
+      </div>
+    </section>
+  );
+}
+
+function ConfirmationCheckbox({ label, checked, disabled, onChange }) {
+  return (
+    <label className="jumper-check" title={`${label}：${checked ? '確認済み' : '未確認'}`}>
+      <input type="checkbox" aria-label={label} checked={checked} disabled={disabled} onChange={onChange} />
+      <span aria-hidden="true">{checked ? '\u2705' : '\u25a1'}</span>
+    </label>
+  );
+}
+
+function AppearanceInspection({ appearance, setAppearance, disabled, onDirty }) {
+  if (!appearance) return <Message>外観確認を読み込み中...</Message>;
+  const { boardGroups, items, checks } = appearance;
+  const boards = boardGroups.flatMap((group) => group.boards);
+  const headerRows = boardGroups.some((group) => group.boards.length > 1) ? 2 : 1;
+
+  function renderCheck(item, board) {
+    const key = `${item.key}:${board}`;
+    return (
+      <ConfirmationCheckbox
+        label={`${board} ${item.name}を確認`}
+        checked={checks[key]}
+        disabled={disabled}
+        onChange={() => {
+          setAppearance((current) => ({
+            ...current,
+            checks: { ...current.checks, [key]: !current.checks[key] },
+          }));
+          onDirty();
+        }}
+      />
+    );
+  }
+
+  return (
+    <section className="appearance-inspection" aria-labelledby="appearance-inspection-title">
+      <h3 id="appearance-inspection-title" className="jumper-heading">外観確認</h3>
+      <div className="equipment-table-wrap appearance-table-wrap">
+        <table
+          className="equipment-table appearance-table"
+          aria-label="外観確認"
+          aria-busy={disabled}
+          style={{ '--appearance-table-width': `${280 + boards.length * 60}px` }}
+        >
+          <colgroup>
+            <col className="appearance-number-column" />
+            <col className="appearance-item-column" />
+            {boards.map((board) => <col key={board} />)}
+          </colgroup>
+          <thead>
+            <tr>
+              <th scope="col" rowSpan={headerRows}>NO</th>
+              <th scope="col" rowSpan={headerRows}>項目</th>
+              {boardGroups.map((group) => (
+                <th
+                  key={group.name}
+                  scope={group.boards.length > 1 ? 'colgroup' : 'col'}
+                  colSpan={group.boards.length}
+                  rowSpan={group.boards.length === 1 ? headerRows : 1}
+                >{group.name}</th>
+              ))}
+            </tr>
+            {headerRows === 2 && (
+              <tr>
+                {boardGroups.filter((group) => group.boards.length > 1).flatMap((group) => (
+                  group.boards.map((board) => <th key={board} scope="col">{board}</th>)
+                ))}
+              </tr>
+            )}
+          </thead>
+          {items.length === 0 ? (
+            <tbody><tr><td colSpan={boards.length + 2}>外観確認項目はありません。</td></tr></tbody>
+          ) : items.map((item, index) => (
+            <tbody key={item.key}>
+              {Array.from({ length: item.rows }, (_, lineIndex) => (
+                <tr key={lineIndex}>
+                  {lineIndex === 0 && (
+                    <>
+                      <td rowSpan={item.rows}>{index + 1}</td>
+                      <th scope={item.rows === 2 ? 'rowgroup' : 'row'} rowSpan={item.rows}>{item.name}</th>
+                    </>
+                  )}
+                  {boards.map((board) => {
+                    const expected = item.values[board];
+                    if (expected === undefined) {
+                      return lineIndex === 0 ? <td key={board} rowSpan={item.rows}>-</td> : null;
+                    }
+                    return (
+                      <td key={board} className={item.rows === 2 && lineIndex === 0 ? 'appearance-expected' : undefined}>
+                        {item.rows === 2 && lineIndex === 0 ? expected : (
+                          <>
+                            {item.rows === 1 && expected && <span className="appearance-inline-value">{expected}</span>}
+                            {renderCheck(item, board)}
+                          </>
+                        )}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          ))}
+        </table>
       </div>
     </section>
   );

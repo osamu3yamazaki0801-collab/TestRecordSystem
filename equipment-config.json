@@ -5,6 +5,10 @@
     "instrumentChoices配列に計測器名(name)と管理番号(managementNo)を指定すると、計測器欄の候補に表示されます。入力した計測器名がnameと一致すると、管理番号が自動入力されます。",
     "instrumentChoicesのnameは重複できず、配列は50件以内にしてください。候補以外の計測器名・管理番号も画面で自由入力できます。",
     "jumpers配列の要素数がジャンパ設定の表示行数になります。各項目に一意なnameとsettingを指定し、最大50件まで設定できます。未指定の場合はW1・W2が表示されます。",
+    "appearanceInspectionで外観確認を設定します。boardGroupsは見出し名(name)と基板名の配列(boards)、itemsは表示順の確認項目です。項目を追加すると表にも追加されます（最大50項目・基板列は合計50件）。",
+    "appearanceInspection.itemsの各項目には一意なkey、項目名(name)、表示行数(rows: 1または2)、基板別の基準値(values)を指定します。rowsが1なら1行に基準値とチェック、2なら上段に基準値・下段にチェックを表示します。",
+    "valuesの空文字は基準値なしのチェック欄です。基板名を省略すると対象外の「-」になります。keyは英字で始まる半角英数字・_・-の50文字以内、名前・基準値は各100文字以内です。itemsを空配列にすると確認項目は表示されません。",
+    "外観確認のkeyは保存結果の識別に使うため、並べ替えや表示行数の変更時は維持してください。項目名・基準値が変わったセルは未確認になります。設定変更後はサーバーを再起動してください。",
     "managerChoices配列に担当者名を設定すると、新規登録・変更画面の担当者ドロップダウン候補に表示されます。重複しない日本語の名前を30文字以内で最大100件設定してください。",
     "JSONでは//や/* ... */のコメントは使えません。要素を無効にする場合はコメントアウトせず削除してください。"
   ],
@@ -24,6 +28,7 @@
     { "name": "PWS132", "serialNumber": "" },
     { "name": "PWM89",  "serialNumber": "" },
     { "name": "PWM85",  "serialNumber": "" },
+    { "name": "AUX120", "serialNumber": "" },
     { "name": "INF265", "serialNumber": "" },
     { "name": "MDM57",  "serialNumber": "" },
     { "name": "INF271", "serialNumber": "" },
@@ -34,6 +39,36 @@
     { "name": "W2", "setting": "OPEN" },
     { "name": "W3", "setting": "CLOSE" }
   ],
+  "appearanceInspection": {
+    "boardGroups": [
+      { "name": "PWS132", "boards": ["PWS132"] },
+      { "name": "PWM89", "boards": ["PWM85", "AUX120","INF265", "MDM57", "INF271"] },
+      { "name": "INF267", "boards": ["INF267"] }
+    ],
+    "items": [
+      {
+        "key": "boardRevision", "name": "基板レビジョン", "rows": 2,
+        "values": {
+          "PWS132": "A", "PWM85": "A4", "AUX120": "C1", "INF265": "B0",
+          "MDM57": "A2", "INF271": "D0", "INF267": "B0"
+        }
+      },
+      {
+        "key": "frontPanel", "name": "フロントパネルの銘板", "rows": 2,
+        "values": { "PWS132": "PWS", "PWM85": "PWM-1", "INF267": "INF-1" }
+      },
+      {
+        "key": "boardFit", "name": "組合せ基板の勘合", "rows": 1,
+        "values": { "INF265": "", "MDM57": "", "INF271": "" }
+      },
+      {
+        "key": "screws", "name": "ネジの締付けの確認", "rows": 1,
+        "values": { "PWS132": "", "PWM85": "", "AUX120": "", "INF265": "", "MDM57": "", "INF271": "" }
+      },
+      { "key": "sdCard", "name": "SDカード実装", "rows": 1, "values": { "PWM85": "" } },
+      { "key": "dustCap", "name": "MDM57防塵キャップ実装確認", "rows": 1, "values": { "MDM57": "" } }
+    ]
+  },
   "instrumentChoices": [
     {
       "name": "自動試験器",

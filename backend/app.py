@@ -43,7 +43,99 @@ DEFAULT_INSTRUMENT_CHOICES = [
     {"name": "自動試験器", "managementNo": "鉄シブ#1"},
     {"name": "デジタルマルチメーター", "managementNo": "AA123456"},
 ]
+DEFAULT_APPEARANCE_BOARD_GROUPS = [
+    {"name": "PWS132", "boards": ["PWS132"]},
+    {"name": "PWM89", "boards": ["PWM85", "INF265", "MDM57", "INF271"]},
+    {"name": "INF267", "boards": ["INF267"]},
+]
+DEFAULT_APPEARANCE_ITEMS = [
+    {
+        "key": "boardRevision", "name": "基板レビジョン", "rows": 2,
+        "values": {
+            "PWS132": "A", "PWM85": "A4", "INF265": "B0",
+            "MDM57": "A2", "INF271": "D0", "INF267": "B0",
+        },
+    },
+    {
+        "key": "frontPanel", "name": "フロントパネルの銘板", "rows": 2,
+        "values": {"PWS132": "PWS", "PWM85": "PWM-1", "INF267": "INF-1"},
+    },
+    {
+        "key": "boardFit", "name": "組合せ基板の勘合", "rows": 1,
+        "values": {"INF265": "", "MDM57": "", "INF271": ""},
+    },
+    {
+        "key": "screws", "name": "ネジの締付けの確認", "rows": 1,
+        "values": {"PWS132": "", "PWM85": "", "INF265": "", "MDM57": "", "INF271": ""},
+    },
+    {"key": "sdCard", "name": "SDカード実装", "rows": 1, "values": {"PWM85": ""}},
+    {"key": "dustCap", "name": "MDM57防塵キャップ実装確認", "rows": 1, "values": {"MDM57": ""}},
+]
+DEFAULT_APPEARANCE_INSPECTION = {
+    "boardGroups": DEFAULT_APPEARANCE_BOARD_GROUPS,
+    "items": DEFAULT_APPEARANCE_ITEMS,
+}
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def appearance_check_settings(items):
+    return {
+        f"{item['key']}:{board}": json.dumps([item["name"], value], ensure_ascii=False)
+        for item in items for board, value in item["values"].items()
+    }
+
+
+def validate_appearance_inspection(appearance):
+    def valid_name(value):
+        return isinstance(value, str) and 0 < len(value) <= 100 and value == value.strip()
+
+    if not isinstance(appearance, dict) or appearance.keys() != {"boardGroups", "items"}:
+        raise ValueError("appearanceInspectionにはboardGroupsとitemsを設定してください。")
+    groups = appearance["boardGroups"]
+    if not isinstance(groups, list) or not 1 <= len(groups) <= 50:
+        raise ValueError("appearanceInspection.boardGroupsは1～50件の配列にしてください。")
+    group_names = set()
+    board_names = set()
+    for group in groups:
+        if (
+            not isinstance(group, dict)
+            or group.keys() != {"name", "boards"}
+            or not valid_name(group["name"])
+            or group["name"] in group_names
+            or not isinstance(group["boards"], list)
+            or not 1 <= len(group["boards"]) <= 50
+        ):
+            raise ValueError("appearanceInspection.boardGroupsには一意なnameとboards配列を設定してください。")
+        group_names.add(group["name"])
+        for board in group["boards"]:
+            if not valid_name(board) or board in board_names:
+                raise ValueError("appearanceInspectionの基板名は重複しない100文字以内の文字列にしてください。")
+            board_names.add(board)
+    if len(board_names) > 50:
+        raise ValueError("appearanceInspectionの基板列は合計50件以内にしてください。")
+    items = appearance["items"]
+    if not isinstance(items, list) or len(items) > 50:
+        raise ValueError("appearanceInspection.itemsは50件以内の配列にしてください。")
+    item_keys = set()
+    for item in items:
+        if (
+            not isinstance(item, dict)
+            or item.keys() != {"key", "name", "rows", "values"}
+            or not isinstance(item["key"], str)
+            or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,49}", item["key"])
+            or item["key"] in item_keys
+            or not valid_name(item["name"])
+            or type(item["rows"]) is not int
+            or item["rows"] not in (1, 2)
+            or not isinstance(item["values"], dict)
+            or not item["values"].keys() <= board_names
+            or any(not isinstance(value, str) or len(value) > 100 for value in item["values"].values())
+        ):
+            raise ValueError(
+                "appearanceInspection.itemsには一意なkey（英字で始まる半角英数字・_-の50文字以内）、"
+                "name（100文字以内）、rows（1または2）、values（設定済み基板名と100文字以内の文字列）を設定してください。"
+            )
+        item_keys.add(item["key"])
 
 
 def load_equipment_config(config_path):
@@ -137,11 +229,14 @@ def load_equipment_config(config_path):
                 f"jumpersには重複しないnameとsettingを指定してください（各100文字以内、最大{MAX_JUMPERS}件）。"
             )
         jumper_names.add(jumper["name"])
+    appearance = config.get("appearanceInspection", DEFAULT_APPEARANCE_INSPECTION)
+    validate_appearance_inspection(appearance)
     return {
         "managerChoices": manager_choices,
         "instrumentChoices": choices,
         "boards": boards,
         "jumpers": jumpers,
+        "appearanceInspection": appearance,
     }
 
 
@@ -268,6 +363,8 @@ def create_app(test_config=None):
     app.config["MANAGER_CHOICES"] = equipment_config["managerChoices"]
     app.config["BOARD_DEFAULTS"] = equipment_config["boards"]
     app.config["JUMPERS"] = equipment_config["jumpers"]
+    app.config["APPEARANCE_INSPECTION"] = equipment_config["appearanceInspection"]
+    appearance_settings = appearance_check_settings(equipment_config["appearanceInspection"]["items"])
 
     # SQLite への接続を共通化する。
     # DB ファイルが存在しないときはフォルダを自動作成する。
@@ -329,8 +426,29 @@ def create_app(test_config=None):
                     record_id INTEGER PRIMARY KEY REFERENCES records(id) ON DELETE CASCADE,
                     payload TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS appearance_checks (
+                    record_id INTEGER NOT NULL REFERENCES records(id) ON DELETE CASCADE,
+                    check_key TEXT NOT NULL,
+                    setting TEXT NOT NULL,
+                    confirmed INTEGER NOT NULL CHECK (confirmed IN (0, 1)),
+                    PRIMARY KEY (record_id, check_key)
+                );
                 """
             )
+            appearance_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(appearance_checks)")
+            }
+            if "setting" not in appearance_columns:
+                connection.execute(
+                    "ALTER TABLE appearance_checks ADD COLUMN setting TEXT NOT NULL DEFAULT ''"
+                )
+                connection.executemany(
+                    "UPDATE appearance_checks SET setting = ? WHERE check_key = ?",
+                    [
+                        (setting, key)
+                        for key, setting in appearance_check_settings(DEFAULT_APPEARANCE_ITEMS).items()
+                    ],
+                )
             jumper_table = connection.execute(
                 "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'jumper_checks'"
             ).fetchone()
@@ -856,6 +974,31 @@ def create_app(test_config=None):
                 })
         return jsonify(records=created_records), 201
 
+    def load_appearance_checks(connection, record_id):
+        saved = {
+            row["check_key"]: row
+            for row in connection.execute(
+                "SELECT check_key, setting, confirmed FROM appearance_checks WHERE record_id = ?",
+                (record_id,),
+            )
+        }
+        return {
+            key: bool(saved[key]["confirmed"])
+            if key in saved and saved[key]["setting"] == setting else False
+            for key, setting in appearance_settings.items()
+        }
+
+    @app.get("/api/records/<int:record_id>/appearance-checks")
+    @require_login
+    def get_appearance_checks(record_id):
+        with closing(connect_db()) as connection:
+            if not connection.execute(
+                "SELECT id FROM records WHERE id = ?", (record_id,)
+            ).fetchone():
+                abort(404)
+            checks = load_appearance_checks(connection, record_id)
+        return jsonify(**app.config["APPEARANCE_INSPECTION"], checks=checks)
+
     @app.get("/api/records/<int:record_id>/jumpers")
     @require_login
     def get_jumper_checks(record_id):
@@ -965,6 +1108,7 @@ def create_app(test_config=None):
         combined = request.path.endswith("/details")
         equipment = None
         jumper_checks = None
+        appearance_checks = None
         if combined:
             try:
                 for file_name, _content_type, file_data in files:
@@ -987,6 +1131,17 @@ def create_app(test_config=None):
                 or any(not isinstance(value, bool) for value in jumper_checks.values())
             ):
                 return jsonify(error="ジャンパ確認は設定済みジャンパの真偽値で指定してください。"), 400
+            if "appearanceChecks" in request.form:
+                try:
+                    appearance_checks = json.loads(request.form["appearanceChecks"])
+                except (ValueError, TypeError):
+                    return jsonify(error="外観確認の形式が正しくありません。"), 400
+                if (
+                    not isinstance(appearance_checks, dict)
+                    or appearance_checks.keys() != appearance_settings.keys()
+                    or any(not isinstance(value, bool) for value in appearance_checks.values())
+                ):
+                    return jsonify(error="外観確認はすべての確認対象の真偽値で指定してください。"), 400
 
         raw_remove_ids = request.form.getlist("removeFileIds")
         try:
@@ -1075,6 +1230,20 @@ def create_app(test_config=None):
                         for jumper in app.config["JUMPERS"]
                     ],
                 )
+                if appearance_checks is not None:
+                    connection.executemany(
+                        """
+                        INSERT INTO appearance_checks (record_id, check_key, setting, confirmed)
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT(record_id, check_key)
+                        DO UPDATE SET setting = excluded.setting, confirmed = excluded.confirmed
+                        """,
+                        [
+                            (record_id, key, appearance_settings[key], int(confirmed))
+                            for key, confirmed in appearance_checks.items()
+                        ],
+                    )
+                appearance_checks = load_appearance_checks(connection, record_id)
                 saved_files = [
                     {"id": row["id"], "fileName": row["file_name"]}
                     for row in connection.execute(
@@ -1100,7 +1269,10 @@ def create_app(test_config=None):
                     ),
                 }
         if combined:
-            return jsonify(success=True, record=updated_record, equipment=equipment, jumperChecks=jumper_checks)
+            return jsonify(
+                success=True, record=updated_record, equipment=equipment,
+                jumperChecks=jumper_checks, appearanceChecks=appearance_checks,
+            )
         return jsonify(success=True)
 
     # 記録を削除する。添付ファイルは外部キーの CASCADE により同時に削除される。

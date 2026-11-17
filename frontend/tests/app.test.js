@@ -24,6 +24,26 @@ function response(data, status = 200) {
   };
 }
 
+function appearanceInspection() {
+  const items = [
+    { key: 'boardRevision', name: '基板レビジョン', rows: 2, values: { PWS132: 'A', PWM85: 'A4', INF265: 'B0', MDM57: 'A2', INF271: 'D0', INF267: 'B0' } },
+    { key: 'frontPanel', name: 'フロントパネルの銘板', rows: 2, values: { PWS132: 'PWS', PWM85: 'PWM-1', INF267: 'INF-1' } },
+    { key: 'boardFit', name: '組合せ基板の勘合', rows: 1, values: { INF265: '', MDM57: '', INF271: '' } },
+    { key: 'screws', name: 'ネジの締付けの確認', rows: 1, values: { PWS132: '', PWM85: '', INF265: '', MDM57: '', INF271: '' } },
+    { key: 'sdCard', name: 'SDカード実装', rows: 1, values: { PWM85: '' } },
+    { key: 'dustCap', name: 'MDM57防塵キャップ実装確認', rows: 1, values: { MDM57: '' } },
+  ];
+  return {
+    boardGroups: [
+      { name: 'PWS132', boards: ['PWS132'] },
+      { name: 'PWM89', boards: ['PWM85', 'INF265', 'MDM57', 'INF271'] },
+      { name: 'INF267', boards: ['INF267'] },
+    ],
+    items,
+    checks: Object.fromEntries(items.flatMap((item) => Object.keys(item.values).map((board) => [`${item.key}:${board}`, false]))),
+  };
+}
+
 async function mountApp(url, fetchMock) {
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
     url,
@@ -438,6 +458,7 @@ test('opening a CSV record selects the trial results tab and renders imported da
     if (pathname === '/api/session') return response({ authenticated: true, username: 'operator', csrfToken: 'test-token' });
     if (pathname === '/api/records') return response([record]);
     if (pathname === '/api/records/17/equipment') return response(equipment);
+    if (pathname === '/api/records/17/appearance-checks') return response(appearanceInspection());
     if (pathname === '/api/records/17/jumpers') {
       return response(jumpers);
     }
@@ -575,7 +596,7 @@ test('opening a CSV record selects the trial results tab and renders imported da
     assert.equal(serialInput.value, 'SERIAL-001');
 
     const checkTab = [...app.dom.window.document.querySelectorAll('[role="tab"]')]
-      .find((tab) => tab.textContent === '試験前チェック');
+      .find((tab) => tab.textContent === '受入検査');
     await click(app.dom, checkTab);
     await waitFor(
       () => app.dom.window.document.querySelector('.jumper-table'),
@@ -620,6 +641,7 @@ test('power board PDF reports upload and preview at the end of the pre-test chec
     if (parsedUrl.pathname === '/api/session') return response({ authenticated: true, username: 'operator', csrfToken: 'test-token' });
     if (parsedUrl.pathname === '/api/records') return response([record]);
     if (parsedUrl.pathname === '/api/records/18/equipment') return response(equipment);
+    if (parsedUrl.pathname === '/api/records/18/appearance-checks') return response(appearanceInspection());
     if (parsedUrl.pathname === '/api/records/18/jumpers') return response(jumpers);
     if (parsedUrl.pathname === '/api/equipment-config') return response({ managerChoices: ['山田太郎'], instrumentChoices: [] });
     if (parsedUrl.pathname === '/api/records/18/power-board-report' && method === 'POST') {
@@ -636,7 +658,7 @@ test('power board PDF reports upload and preview at the end of the pre-test chec
       'record detail was not rendered',
     );
     const checkTab = [...app.dom.window.document.querySelectorAll('[role="tab"]')]
-      .find((tab) => tab.textContent === '試験前チェック');
+      .find((tab) => tab.textContent === '受入検査');
     await click(app.dom, checkTab);
     await waitFor(
       () => app.dom.window.document.querySelector('.power-board-report-section'),
@@ -666,6 +688,121 @@ test('power board PDF reports upload and preview at the end of the pre-test chec
     assert.ok(calls.some((call) => (
       call.path === '/api/records/18/power-board-report' && call.method === 'POST'
     )));
+  } finally {
+    await app.cleanup();
+  }
+});
+
+test('appearance inspection checks cancel, save and retain input on failure with other details', async () => {
+  const record = {
+    id: 19, trialNo: 'T-019', projectName: '案件', productNo: 'A 19',
+    registrationDate: '20261114', manager: '山田太郎', files: [],
+  };
+  const equipment = {
+    boards: [{ name: 'PWS132', serialNumber: '' }],
+    instruments: [],
+    software: [
+      { name: 'テストプロ', sdFormat: 'TEST0306', version: '', checksum: '' },
+      { name: 'PWM85 基板 FPGA', sdFormat: 'XPLD0885', version: '', checksum: '' },
+      { name: 'INF267 基板 FPGA', sdFormat: 'XPLD0856', version: '', checksum: '' },
+    ],
+  };
+  const appearance = appearanceInspection();
+  appearance.checks['dustCap:MDM57'] = true;
+  appearance.boardGroups.push({ name: 'AUX', boards: ['AUX'] });
+  appearance.items.push(
+    { key: 'seal', name: '封印確認', rows: 1, values: { AUX: 'OK' } },
+    { key: 'packing', name: '梱包確認', rows: 2, values: { PWS132: '付属品', AUX: '' } },
+  );
+  appearance.checks['seal:AUX'] = false;
+  appearance.checks['packing:PWS132'] = false;
+  appearance.checks['packing:AUX'] = false;
+  const saves = [];
+  let failSave = true;
+  const fetchMock = async (url, options = {}) => {
+    const { pathname } = new URL(url, 'http://localhost');
+    if (pathname === '/api/session') return response({ authenticated: true, username: 'operator', csrfToken: 'test-token' });
+    if (pathname === '/api/records') return response([record]);
+    if (pathname === '/api/records/19/equipment') return response(equipment);
+    if (pathname === '/api/records/19/jumpers') return response([{ name: 'W1', setting: '1-2', confirmed: false }]);
+    if (pathname === '/api/records/19/appearance-checks') return response(appearance);
+    if (pathname === '/api/equipment-config') return response({ managerChoices: ['山田太郎'], instrumentChoices: [] });
+    if (pathname === '/api/records/19/details' && options.method === 'PUT') {
+      saves.push(options.body);
+      if (failSave) return response({ error: '外観確認の保存に失敗しました。' }, 500);
+      return response({
+        record, equipment,
+        jumperChecks: JSON.parse(options.body.get('jumperChecks')),
+        appearanceChecks: JSON.parse(options.body.get('appearanceChecks')),
+      });
+    }
+    return response({ error: `Unexpected request: ${pathname}` }, 404);
+  };
+  const app = await mountApp('http://localhost/?recordId=19', fetchMock);
+  try {
+    const document = app.dom.window.document;
+    await waitFor(() => document.querySelector('.record-detail-tabs'), 'record detail was not rendered');
+    const acceptanceTab = [...document.querySelectorAll('.record-detail-tabs [role="tab"]')]
+      .find((tab) => tab.textContent === '受入検査');
+    await click(app.dom, acceptanceTab);
+    const panel = document.getElementById('record-detail-panel-1');
+    const section = panel.querySelector('.appearance-inspection');
+    assert.equal(panel.firstElementChild, section);
+    const table = section.querySelector('table');
+    assert.equal(table.querySelectorAll('tbody').length, 8);
+    assert.equal(table.querySelectorAll('tbody tr').length, 11);
+    assert.equal(table.querySelectorAll('input[type="checkbox"]').length, 22);
+    assert.equal(table.querySelector('th[colspan="4"]').textContent, 'PWM89');
+    assert.deepEqual(
+      [...table.querySelectorAll('tbody:first-of-type .appearance-expected')].map((cell) => cell.textContent),
+      ['A', 'A4', 'B0', 'A2', 'D0', 'B0'],
+    );
+    const groups = table.querySelectorAll('tbody');
+    assert.equal(groups[0].querySelector('th').rowSpan, 2);
+    assert.equal(groups[0].querySelectorAll('tr:first-child input').length, 0);
+    assert.equal(groups[0].querySelectorAll('tr:last-child input').length, 6);
+    const nameplateCells = [...groups[1].querySelectorAll('tr:first-child td')].slice(1);
+    assert.deepEqual(nameplateCells.map((cell) => cell.textContent), ['PWS', 'PWM-1', '-', '-', '-', 'INF-1', '-']);
+    assert.equal(nameplateCells[2].rowSpan, 2, 'not-applicable cells should span both lines');
+    assert.equal(groups[6].querySelectorAll('tr').length, 1);
+    assert.equal(groups[6].querySelector('.appearance-inline-value').textContent, 'OK');
+    assert.equal(groups[7].querySelectorAll('tr').length, 2);
+    assert.equal(groups[7].querySelector('th').rowSpan, 2);
+    assert.equal(groups[7].querySelectorAll('input').length, 2);
+    const revision = table.querySelector('input[aria-label="PWS132 基板レビジョンを確認"]');
+    const dustCap = table.querySelector('input[aria-label="MDM57 MDM57防塵キャップ実装確認を確認"]');
+    assert.equal(dustCap.checked, true);
+    assert.equal(revision.checked, false);
+    await click(app.dom, revision);
+    assert.equal(revision.checked, true);
+    assert.equal(revision.nextElementSibling.textContent, '✅');
+    assert.equal(saves.length, 0, 'toggling should wait for the shared save');
+    assert.ok(document.querySelector('.status-text.warning'));
+    app.dom.window.confirm = () => true;
+    const cancelButton = [...document.querySelectorAll('.record-detail-common button')]
+      .find((button) => button.textContent === 'キャンセル');
+    await click(app.dom, cancelButton);
+    assert.equal(revision.checked, false);
+    assert.equal(dustCap.checked, true);
+    await click(app.dom, revision);
+    const seal = table.querySelector('input[aria-label="AUX 封印確認を確認"]');
+    await click(app.dom, seal);
+    const saveButton = document.querySelector('button[form="record-edit-form"]');
+    await click(app.dom, saveButton);
+    await waitFor(() => saves.length === 1, 'save was not submitted');
+    assert.ok(document.body.textContent.includes('外観確認の保存に失敗しました。'));
+    assert.equal(revision.checked, true);
+    assert.ok(document.querySelector('.status-text.warning'));
+    failSave = false;
+    await click(app.dom, saveButton);
+    await waitFor(() => saves.length === 2, 'save retry was not submitted');
+    assert.equal(JSON.parse(saves[1].get('appearanceChecks'))['boardRevision:PWS132'], true);
+    assert.equal(JSON.parse(saves[1].get('appearanceChecks'))['dustCap:MDM57'], true);
+    assert.equal(JSON.parse(saves[1].get('appearanceChecks'))['seal:AUX'], true);
+    assert.equal(document.querySelector('.status-text.warning'), null);
+    await click(app.dom, revision);
+    await click(app.dom, cancelButton);
+    assert.equal(revision.checked, true, 'cancel should restore the latest successful save');
   } finally {
     await app.cleanup();
   }

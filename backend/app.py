@@ -75,6 +75,27 @@ DEFAULT_APPEARANCE_INSPECTION = {
     "boardGroups": DEFAULT_APPEARANCE_BOARD_GROUPS,
     "items": DEFAULT_APPEARANCE_ITEMS,
 }
+BACKBOARD_INSERTION_KEY_CONNECTORS = [
+    {"name": "P31", "displayName": "P31", "positions": ["E", "F", "G", "M"]},
+    {"name": "P32", "displayName": "P32", "positions": ["E", "F", "H", "L"]},
+    {"name": "P34", "displayName": "P34", "positions": ["E", "F", "L", "M"]},
+    {"name": "P33", "displayName": "PS3", "positions": ["E", "H", "K", "L"]},
+]
+BOARD_INSERTION_KEY_POSITIONS = ("E", "F", "G", "H", "I", "K", "L", "M")
+INSERTION_KEY_CONNECTORS = BACKBOARD_INSERTION_KEY_CONNECTORS + [
+    {
+        "name": f"board:{connector['displayName']}",
+        "displayName": board_name,
+        "side": "board",
+        "positions": [
+            position for position in BOARD_INSERTION_KEY_POSITIONS
+            if position not in connector["positions"]
+        ],
+    }
+    for connector, board_name in zip(
+        BACKBOARD_INSERTION_KEY_CONNECTORS, ("INF265", "PWM85", "INF267", "PWS132")
+    )
+]
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -432,6 +453,13 @@ def create_app(test_config=None):
                     setting TEXT NOT NULL,
                     confirmed INTEGER NOT NULL CHECK (confirmed IN (0, 1)),
                     PRIMARY KEY (record_id, check_key)
+                );
+                CREATE TABLE IF NOT EXISTS insertion_key_checks (
+                    record_id INTEGER NOT NULL REFERENCES records(id) ON DELETE CASCADE,
+                    connector_name TEXT NOT NULL,
+                    positions TEXT NOT NULL,
+                    confirmed INTEGER NOT NULL CHECK (confirmed IN (0, 1)),
+                    PRIMARY KEY (record_id, connector_name)
                 );
                 """
             )
@@ -999,6 +1027,35 @@ def create_app(test_config=None):
             checks = load_appearance_checks(connection, record_id)
         return jsonify(**app.config["APPEARANCE_INSPECTION"], checks=checks)
 
+    def load_insertion_key_checks(connection, record_id):
+        saved = {
+            row["connector_name"]: row
+            for row in connection.execute(
+                "SELECT connector_name, positions, confirmed FROM insertion_key_checks WHERE record_id = ?",
+                (record_id,),
+            )
+        }
+        return [
+            {
+                **connector,
+                "confirmed": bool(saved[connector["name"]]["confirmed"])
+                if connector["name"] in saved
+                and saved[connector["name"]]["positions"] == ",".join(connector["positions"])
+                else False,
+            }
+            for connector in INSERTION_KEY_CONNECTORS
+        ]
+
+    @app.get("/api/records/<int:record_id>/insertion-keys")
+    @require_login
+    def get_insertion_key_checks(record_id):
+        with closing(connect_db()) as connection:
+            if not connection.execute(
+                "SELECT id FROM records WHERE id = ?", (record_id,)
+            ).fetchone():
+                abort(404)
+            return jsonify(load_insertion_key_checks(connection, record_id))
+
     @app.get("/api/records/<int:record_id>/jumpers")
     @require_login
     def get_jumper_checks(record_id):
@@ -1109,6 +1166,7 @@ def create_app(test_config=None):
         equipment = None
         jumper_checks = None
         appearance_checks = None
+        insertion_key_checks = None
         if combined:
             try:
                 for file_name, _content_type, file_data in files:
@@ -1142,6 +1200,20 @@ def create_app(test_config=None):
                     or any(not isinstance(value, bool) for value in appearance_checks.values())
                 ):
                     return jsonify(error="外観確認はすべての確認対象の真偽値で指定してください。"), 400
+            if "insertionKeyChecks" in request.form:
+                try:
+                    insertion_key_checks = json.loads(request.form["insertionKeyChecks"])
+                except (ValueError, TypeError):
+                    return jsonify(error="誤挿入キー確認の形式が正しくありません。"), 400
+                if (
+                    not isinstance(insertion_key_checks, dict)
+                    or set(insertion_key_checks) not in (
+                        {connector["name"] for connector in INSERTION_KEY_CONNECTORS},
+                        {connector["name"] for connector in BACKBOARD_INSERTION_KEY_CONNECTORS},
+                    )
+                    or any(not isinstance(value, bool) for value in insertion_key_checks.values())
+                ):
+                    return jsonify(error="誤挿入キー確認はすべてのコネクタの真偽値で指定してください。"), 400
 
         raw_remove_ids = request.form.getlist("removeFileIds")
         try:
@@ -1244,6 +1316,24 @@ def create_app(test_config=None):
                         ],
                     )
                 appearance_checks = load_appearance_checks(connection, record_id)
+                if insertion_key_checks is not None:
+                    connection.executemany(
+                        """
+                        INSERT INTO insertion_key_checks (record_id, connector_name, positions, confirmed)
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT(record_id, connector_name)
+                        DO UPDATE SET positions = excluded.positions, confirmed = excluded.confirmed
+                        """,
+                        [
+                            (
+                                record_id, connector["name"], ",".join(connector["positions"]),
+                                int(insertion_key_checks[connector["name"]]),
+                            )
+                            for connector in INSERTION_KEY_CONNECTORS
+                            if connector["name"] in insertion_key_checks
+                        ],
+                    )
+                insertion_keys = load_insertion_key_checks(connection, record_id)
                 saved_files = [
                     {"id": row["id"], "fileName": row["file_name"]}
                     for row in connection.execute(
@@ -1272,6 +1362,7 @@ def create_app(test_config=None):
             return jsonify(
                 success=True, record=updated_record, equipment=equipment,
                 jumperChecks=jumper_checks, appearanceChecks=appearance_checks,
+                insertionKeys=insertion_keys,
             )
         return jsonify(success=True)
 

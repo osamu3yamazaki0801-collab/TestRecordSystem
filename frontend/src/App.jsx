@@ -331,7 +331,8 @@ function App() {
   const [managerChoices, setManagerChoices] = useState(null);
   const [detailJumpers, setDetailJumpers] = useState(null);
   const [detailAppearance, setDetailAppearance] = useState(null);
-  const savedDetails = useRef({ equipment: null, jumpers: null, appearance: null });
+  const [detailInsertionKeys, setDetailInsertionKeys] = useState(null);
+  const savedDetails = useRef({ equipment: null, jumpers: null, appearance: null, insertionKeys: null });
   const [detailMessage, setDetailMessage] = useState({ text: '', type: '' });
   const [recordDirty, setRecordDirty] = useState(false);
 
@@ -436,7 +437,8 @@ function App() {
       apiRequest(`/api/records/${detailRecordId}/jumpers`, csrfToken.current),
       apiRequest('/api/equipment-config', csrfToken.current),
       apiRequest(`/api/records/${detailRecordId}/appearance-checks`, csrfToken.current),
-    ]).then(([result, equipment, jumpers, config, appearance]) => {
+      apiRequest(`/api/records/${detailRecordId}/insertion-keys`, csrfToken.current),
+    ]).then(([result, equipment, jumpers, config, appearance, insertionKeys]) => {
       if (!active) return;
       const record = result.find((item) => String(item.id) === detailRecordId);
       if (!record) {
@@ -449,7 +451,8 @@ function App() {
       setManagerChoices(config.managerChoices);
       setDetailJumpers(jumpers);
       setDetailAppearance(appearance);
-      savedDetails.current = { equipment, jumpers, appearance };
+      setDetailInsertionKeys(insertionKeys);
+      savedDetails.current = { equipment, jumpers, appearance, insertionKeys };
       setDetailMessage({ text: '', type: '' });
     }).catch((error) => {
       if (!active) return;
@@ -525,7 +528,8 @@ function App() {
     setDetailEquipment(null);
     setDetailJumpers(null);
     setDetailAppearance(null);
-    savedDetails.current = { equipment: null, jumpers: null, appearance: null };
+    setDetailInsertionKeys(null);
+    savedDetails.current = { equipment: null, jumpers: null, appearance: null, insertionKeys: null };
   }
 
   // ログイン処理。
@@ -587,7 +591,7 @@ function App() {
     const formData = new FormData(form);
     const isEditing = editingRecordId !== null;
     if (isEditing) {
-      if (!detailEquipment || !detailJumpers || !detailAppearance) {
+      if (!detailEquipment || !detailJumpers || !detailAppearance || !detailInsertionKeys) {
         setRegisterMessage({ text: '詳細情報の読み込みが完了していません。', type: 'error' });
         return;
       }
@@ -602,6 +606,9 @@ function App() {
         detailJumpers.map((jumper) => [jumper.name, jumper.confirmed]),
       )));
       formData.set('appearanceChecks', JSON.stringify(detailAppearance.checks));
+      formData.set('insertionKeyChecks', JSON.stringify(Object.fromEntries(
+        detailInsertionKeys.map((connector) => [connector.name, connector.confirmed]),
+      )));
     }
     const fieldNames = ['trialNo', 'projectName', 'productNo', 'registrationDate', 'manager'];
     const valuesList = isEditing
@@ -680,7 +687,11 @@ function App() {
         setDetailEquipment(result.equipment);
         setDetailJumpers(updatedJumpers);
         setDetailAppearance(updatedAppearance);
-        savedDetails.current = { equipment: result.equipment, jumpers: updatedJumpers, appearance: updatedAppearance };
+        setDetailInsertionKeys(result.insertionKeys);
+        savedDetails.current = {
+          equipment: result.equipment, jumpers: updatedJumpers,
+          appearance: updatedAppearance, insertionKeys: result.insertionKeys,
+        };
       } else {
         const createdRecords = result.records || [{
           id: result.id,
@@ -803,6 +814,7 @@ function App() {
       setDetailEquipment(savedDetails.current.equipment);
       setDetailJumpers(savedDetails.current.jumpers);
       setDetailAppearance(savedDetails.current.appearance);
+      setDetailInsertionKeys(savedDetails.current.insertionKeys);
     } else {
       if (recordDirty && !window.confirm('未保存の入力を破棄して記録の検索画面へ移動しますか？')) return;
       clearRegistrationDraft();
@@ -871,6 +883,8 @@ function App() {
             setJumpers={setDetailJumpers}
             appearance={detailAppearance}
             setAppearance={setDetailAppearance}
+            insertionKeys={detailInsertionKeys}
+            setInsertionKeys={setDetailInsertionKeys}
             onDirty={() => setRecordDirty(true)}
             cancelRegister={cancelRegister}
             registerMessage={registerMessage}
@@ -1161,7 +1175,7 @@ function RegistrationForm({ registerForm, handleRegister, registrationRows, setR
   );
 }
 
-function RecordDetails({ record, onClose, recordDirty, registering, registrationForm, equipment, instrumentChoices, setEquipment, jumpers, setJumpers, appearance, setAppearance, onDirty, cancelRegister, registerMessage, pendingFiles, existingFiles, onFilesChanged, onPowerBoardReportChanged, csrfToken, setAuthenticated, setLoginError }) {
+function RecordDetails({ record, onClose, recordDirty, registering, registrationForm, equipment, instrumentChoices, setEquipment, jumpers, setJumpers, appearance, setAppearance, insertionKeys, setInsertionKeys, onDirty, cancelRegister, registerMessage, pendingFiles, existingFiles, onFilesChanged, onPowerBoardReportChanged, csrfToken, setAuthenticated, setLoginError }) {
   const [activeTab, setActiveTab] = useState(() => (
     existingFiles.some((file) => /\.csv$/i.test(file.fileName)) ? 2 : 0
   ));
@@ -1353,7 +1367,7 @@ function RecordDetails({ record, onClose, recordDirty, registering, registration
         {registrationForm}
         <div className="button-row">
           {recordDirty && <span className="status-text warning">未保存</span>}
-          <button type="submit" form="record-edit-form" className="primary-button" disabled={registering || fileActionPending || reportActionPending || !equipment || !jumpers || !appearance}>
+          <button type="submit" form="record-edit-form" className="primary-button" disabled={registering || fileActionPending || reportActionPending || !equipment || !jumpers || !appearance || !insertionKeys}>
             {registering ? '保存中...' : '保存'}
           </button>
           <button type="button" className="secondary-button" disabled={registering || fileActionPending || reportActionPending} onClick={cancelRegister}>キャンセル</button>
@@ -1411,6 +1425,7 @@ function RecordDetails({ record, onClose, recordDirty, registering, registration
           {index === 1 && (
             <>
               <AppearanceInspection appearance={appearance} setAppearance={setAppearance} disabled={registering} onDirty={onDirty} />
+              <InsertionKeyInspection connectors={insertionKeys} setConnectors={setInsertionKeys} disabled={registering} onDirty={onDirty} />
               <h3 className="jumper-heading">ジャンパ設定</h3>
               {jumpers ? (
                 <div className="equipment-table-wrap jumper-table-wrap">
@@ -1534,6 +1549,92 @@ function ConfirmationCheckbox({ label, checked, disabled, onChange }) {
       <input type="checkbox" aria-label={label} checked={checked} disabled={disabled} onChange={onChange} />
       <span aria-hidden="true">{checked ? '\u2705' : '\u25a1'}</span>
     </label>
+  );
+}
+
+const INSERTION_KEY_POSITIONS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'K', 'L', 'M'];
+
+function InsertionKeyInspection({ connectors, setConnectors, disabled, onDirty }) {
+  if (!connectors) return <Message>誤挿入キー確認を読み込み中...</Message>;
+  return (
+    <section className="insertion-key-inspection" aria-labelledby="insertion-key-title">
+      <h3 id="insertion-key-title" className="jumper-heading">誤挿入キー確認</h3>
+      <div className="insertion-key-layout">
+        <div className="insertion-key-sides">
+          <InsertionKeyTable
+            title="バックボード側"
+            positions={INSERTION_KEY_POSITIONS}
+            connectors={connectors.filter((connector) => connector.side !== 'board')}
+            setConnectors={setConnectors}
+            disabled={disabled}
+            onDirty={onDirty}
+          />
+          <InsertionKeyTable
+            title="基板側"
+            positions={INSERTION_KEY_POSITIONS}
+            connectors={connectors.filter((connector) => connector.side === 'board')}
+            setConnectors={setConnectors}
+            disabled={disabled}
+            onDirty={onDirty}
+          />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function InsertionKeyTable({ title, positions, connectors, setConnectors, disabled, onDirty }) {
+  const confirmed = connectors.length > 0 && connectors.every((connector) => connector.confirmed);
+  return (
+    <div className="insertion-key-side">
+      <p className="insertion-key-instruction">{title}</p>
+      <div className="insertion-key-scroll">
+        <table className="insertion-key-table" aria-label={`${title}の誤挿入キー確認`}>
+          <colgroup>
+            <col className="insertion-key-position-column" />
+            <col span="4" className="insertion-key-connector-column" />
+          </colgroup>
+          <thead>
+            <tr>
+              <th scope="col">位置</th>
+              {connectors.map((connector) => (
+                <th scope="col" key={connector.name}>{connector.displayName}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {positions.map((position) => (
+              <tr key={position}>
+                <th scope="row">{position}</th>
+                {connectors.map((connector) => {
+                  const filled = connector.positions.includes(position);
+                  return (
+                    <td key={connector.name}><span className={`insertion-key-slot${filled ? ' insertion-key-slot--filled' : ''}`} role="img" aria-label={filled ? 'キーあり' : 'キーなし'} /></td>
+                  );
+                })}
+              </tr>
+            ))}
+            <tr>
+              <th scope="row">確認</th>
+              <td colSpan={4}>
+                <ConfirmationCheckbox
+                  label={`${title}の誤挿入キーを確認`}
+                  checked={confirmed}
+                  disabled={disabled}
+                  onChange={(event) => {
+                    const checked = event.target.checked;
+                    const names = new Set(connectors.map((connector) => connector.name));
+                    setConnectors((current) => current.map((item) => names.has(item.name)
+                      ? { ...item, confirmed: checked } : item));
+                    onDirty();
+                  }}
+                />
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
   );
 }
 

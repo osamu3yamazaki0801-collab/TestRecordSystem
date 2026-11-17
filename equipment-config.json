@@ -58,7 +58,7 @@
       },
       {
         "key": "screws", "name": "ネジの締付けの確認", "rows": 1,
-        "values": { "PWS132": "", "PWM85": "", "AUX120": "", "INF265": "", "MDM57": "", "INF271": "" }
+        "values": { "PWS132": "", "PWM85": "", "AUX120": "", "INF265": "", "MDM57": "", "INF271": "", "INF267": "" }
       },
       { "key": "sdCard", "name": "SDカード実装", "rows": 1, "values": { "PWM85": "" } },
       { "key": "dustCap", "name": "MDM57防塵キャップ実装確認", "rows": 1, "values": { "MDM57": "" } }

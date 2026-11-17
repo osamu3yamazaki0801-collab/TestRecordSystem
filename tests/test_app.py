@@ -974,12 +974,30 @@ class LedgerAppTests(unittest.TestCase):
         appearance = self.client.get(appearance_url).json
         self.assertTrue(all(value is False for value in appearance["checks"].values()))
         appearance["checks"]["boardRevision:PWS132"] = True
+        insertion_url = f"/api/records/{record_id}/insertion-keys"
+        insertion_keys = self.client.get(insertion_url).json
+        self.assertEqual(insertion_keys, [
+            {"name": "P31", "displayName": "P31", "positions": ["E", "F", "G", "M"], "confirmed": False},
+            {"name": "P32", "displayName": "P32", "positions": ["E", "F", "H", "L"], "confirmed": False},
+            {"name": "P34", "displayName": "P34", "positions": ["E", "F", "L", "M"], "confirmed": False},
+            {"name": "P33", "displayName": "PS3", "positions": ["E", "H", "K", "L"], "confirmed": False},
+            {"name": "board:P31", "displayName": "INF265", "side": "board", "positions": ["H", "I", "K", "L"], "confirmed": False},
+            {"name": "board:P32", "displayName": "PWM85", "side": "board", "positions": ["G", "I", "K", "M"], "confirmed": False},
+            {"name": "board:P34", "displayName": "INF267", "side": "board", "positions": ["G", "H", "I", "K"], "confirmed": False},
+            {"name": "board:PS3", "displayName": "PWS132", "side": "board", "positions": ["F", "G", "I", "M"], "confirmed": False},
+        ])
+        insertion_keys[0]["confirmed"] = True
+        insertion_keys[2]["confirmed"] = True
+        insertion_keys[4]["confirmed"] = True
+        insertion_keys[5]["confirmed"] = True
+        insertion_checks = {connector["name"]: connector["confirmed"] for connector in insertion_keys}
         response = self.client.put(
             f"/api/records/{record_id}/details",
             data=self.record_data(
                 projectName="一括変更案件", equipment=json.dumps(equipment),
                 jumperChecks=json.dumps({"W1": True, "W2": False}),
                 appearanceChecks=json.dumps(appearance["checks"]),
+                insertionKeyChecks=json.dumps(insertion_checks),
                 removeFileIds=str(file_id),
                 resultFiles=(io.BytesIO(SAMPLE_RESULTS_CSV.encode("utf-8")), "new.csv"),
             ),
@@ -992,6 +1010,8 @@ class LedgerAppTests(unittest.TestCase):
         self.assertEqual(response.json["equipment"], equipment)
         self.assertEqual(response.json["jumperChecks"], {"W1": True, "W2": False})
         self.assertEqual(response.json["appearanceChecks"], appearance["checks"])
+        self.assertEqual(response.json["insertionKeys"], insertion_keys)
+        self.assertEqual(self.client.get(insertion_url).json, insertion_keys)
         self.assertEqual(self.client.get(appearance_url).json, appearance)
         self.assertEqual([file["fileName"] for file in record["files"]], ["new.csv"])
         self.assertEqual(self.client.get(f"/api/records/{record_id}/equipment").json, equipment)
@@ -1006,6 +1026,7 @@ class LedgerAppTests(unittest.TestCase):
         self.assertEqual(restarted.get(f"/api/records/{record_id}/equipment").json, equipment)
         self.assertTrue(restarted.get(f"/api/records/{record_id}/jumpers").json[0]["confirmed"])
         self.assertEqual(restarted.get(appearance_url).json, appearance)
+        self.assertEqual(restarted.get(insertion_url).json, insertion_keys)
 
         legacy_save = self.client.put(
             f"/api/records/{record_id}/details",
@@ -1017,6 +1038,19 @@ class LedgerAppTests(unittest.TestCase):
         )
         self.assertEqual(legacy_save.status_code, 200)
         self.assertEqual(self.client.get(appearance_url).json, appearance)
+        self.assertEqual(self.client.get(insertion_url).json, insertion_keys)
+
+        legacy_insertion_save = self.client.put(
+            f"/api/records/{record_id}/details",
+            data=self.record_data(
+                equipment=json.dumps(equipment),
+                jumperChecks=json.dumps({"W1": True, "W2": False}),
+                insertionKeyChecks=json.dumps({item["name"]: item["confirmed"] for item in insertion_keys[:4]}),
+            ),
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(legacy_insertion_save.status_code, 200)
+        self.assertEqual(self.client.get(insertion_url).json, insertion_keys)
 
         appearance["checks"]["boardRevision:PWS132"] = False
         unchecked = self.client.put(
@@ -1030,6 +1064,51 @@ class LedgerAppTests(unittest.TestCase):
         )
         self.assertEqual(unchecked.status_code, 200)
         self.assertEqual(self.client.get(appearance_url).json, appearance)
+
+    def test_insertion_key_checks_are_scoped_and_deleted_with_record(self):
+        self.assertEqual(self.client.get("/api/records/1/insertion-keys").status_code, 401)
+        self.login()
+        self.assertEqual(self.client.get("/api/records/999999/insertion-keys").status_code, 404)
+        record_ids = [
+            self.client.post(
+                "/api/records", data=self.record_data(),
+                headers={"X-CSRF-Token": self.csrf_token},
+            ).json["id"]
+            for _ in range(2)
+        ]
+        url = f"/api/records/{record_ids[0]}/insertion-keys"
+        keys = self.client.get(url).json
+        data = self.record_data(
+            equipment=json.dumps(self.client.get(f"/api/records/{record_ids[0]}/equipment").json),
+            jumperChecks=json.dumps({"W1": False, "W2": False}),
+            insertionKeyChecks=json.dumps({item["name"]: True for item in keys}),
+        )
+        response = self.client.put(
+            f"/api/records/{record_ids[0]}/details", data=data,
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(all(item["confirmed"] for item in self.client.get(url).json))
+        other = self.client.get(f"/api/records/{record_ids[1]}/insertion-keys").json
+        self.assertTrue(all(not item["confirmed"] for item in other))
+        with closing(sqlite3.connect(self.app.config["DATABASE_PATH"])) as connection, connection:
+            connection.execute(
+                "UPDATE insertion_key_checks SET positions = ? WHERE record_id = ? AND connector_name = ?",
+                ("E,F", record_ids[0], "P31"),
+            )
+        self.assertFalse(self.client.get(url).json[0]["confirmed"])
+        self.assertTrue(self.client.get(url).json[1]["confirmed"])
+        data["insertionKeyChecks"] = json.dumps({item["name"]: False for item in keys})
+        self.assertEqual(self.client.put(
+            f"/api/records/{record_ids[0]}/details", data=data,
+            headers={"X-CSRF-Token": self.csrf_token},
+        ).status_code, 200)
+        self.assertTrue(all(not item["confirmed"] for item in self.client.get(url).json))
+        self.client.delete(
+            f"/api/records/{record_ids[0]}", headers={"X-CSRF-Token": self.csrf_token},
+        )
+        with closing(sqlite3.connect(self.app.config["DATABASE_PATH"])) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM insertion_key_checks").fetchone()[0], 0)
 
     def test_appearance_checks_are_private_and_scoped_to_records(self):
         self.assertEqual(self.client.get("/api/records/1/appearance-checks").status_code, 401)
@@ -1075,6 +1154,9 @@ class LedgerAppTests(unittest.TestCase):
         appearance_url = f"/api/records/{record_id}/appearance-checks"
         appearance = self.client.get(appearance_url).json
         checked = {key: True for key in appearance["checks"]}
+        insertion_url = f"/api/records/{record_id}/insertion-keys"
+        insertion_keys = self.client.get(insertion_url).json
+        insertion_checked = {item["name"]: True for item in insertion_keys}
         invalid_equipment = json.loads(json.dumps(equipment))
         invalid_equipment["boards"][0]["name"] = "OTHER"
         for extra in (
@@ -1088,6 +1170,12 @@ class LedgerAppTests(unittest.TestCase):
             {"appearanceChecks": json.dumps({**checked, "unknown:PWS132": True})},
             {"appearanceChecks": json.dumps({**checked, "boardRevision:PWS132": 1})},
             {"appearanceChecks": json.dumps({**checked, "frontPanel:INF265": True})},
+            {"insertionKeyChecks": "not-json"},
+            {"insertionKeyChecks": "null"},
+            {"insertionKeyChecks": json.dumps({"P31": True})},
+            {"insertionKeyChecks": json.dumps({key: value for key, value in insertion_checked.items() if key != "board:PS3"})},
+            {"insertionKeyChecks": json.dumps({**insertion_checked, "P31": 1})},
+            {"insertionKeyChecks": json.dumps({**insertion_checked, "OTHER": True})},
             {"registrationDate": "20260230"},
             {"removeFileIds": "999999"},
         ):
@@ -1096,6 +1184,7 @@ class LedgerAppTests(unittest.TestCase):
                     projectName="保存されない案件", equipment=json.dumps(equipment),
                     jumperChecks=json.dumps({"W1": True, "W2": True}),
                     appearanceChecks=json.dumps(checked),
+                    insertionKeyChecks=json.dumps(insertion_checked),
                     removeFileIds=str(original["files"][0]["id"]),
                     resultFiles=(io.BytesIO(SAMPLE_RESULTS_CSV.encode("utf-8")), "replacement.csv"),
                 )
@@ -1109,6 +1198,7 @@ class LedgerAppTests(unittest.TestCase):
                 self.assertEqual(self.client.get(f"/api/records/{record_id}/equipment").json, equipment)
                 self.assertEqual(self.client.get(f"/api/records/{record_id}/jumpers").json, jumpers)
                 self.assertEqual(self.client.get(appearance_url).json, appearance)
+                self.assertEqual(self.client.get(insertion_url).json, insertion_keys)
         self.assertEqual(self.client.put(f"/api/records/{record_id}/details", data={}).status_code, 400)
         self.assertEqual(self.client.put(
             "/api/records/999999/details",
@@ -1128,13 +1218,15 @@ class LedgerAppTests(unittest.TestCase):
         modified_equipment["boards"][0]["serialNumber"] = "NOT-SAVED"
         appearance_url = f"/api/records/{record_id}/appearance-checks"
         appearance = self.client.get(appearance_url).json
+        insertion_url = f"/api/records/{record_id}/insertion-keys"
+        insertion_keys = self.client.get(insertion_url).json
         original_connect = sqlite3.connect
 
         class FailingConnection(sqlite3.Connection):
             def executemany(self, statement, parameters):
                 result = super().executemany(statement, parameters)
-                if "INSERT INTO appearance_checks" in statement:
-                    raise sqlite3.OperationalError("test failure after appearance save")
+                if "INSERT INTO insertion_key_checks" in statement:
+                    raise sqlite3.OperationalError("test failure after insertion key save")
                 return result
 
         with patch("backend.app.sqlite3.connect", side_effect=lambda *args, **kwargs: original_connect(*args, factory=FailingConnection, **kwargs)):
@@ -1145,6 +1237,7 @@ class LedgerAppTests(unittest.TestCase):
                         projectName="保存されない案件", equipment=json.dumps(modified_equipment),
                         jumperChecks=json.dumps({"W1": True, "W2": True}),
                         appearanceChecks=json.dumps({key: True for key in appearance["checks"]}),
+                        insertionKeyChecks=json.dumps({item["name"]: True for item in insertion_keys}),
                         removeFileIds=str(original["files"][0]["id"]),
                         resultFiles=(io.BytesIO(SAMPLE_RESULTS_CSV.encode("utf-8")), "replacement.csv"),
                     ),
@@ -1154,6 +1247,7 @@ class LedgerAppTests(unittest.TestCase):
         self.assertEqual(self.client.get(f"/api/records/{record_id}/equipment").json, equipment)
         self.assertTrue(all(not jumper["confirmed"] for jumper in self.client.get(f"/api/records/{record_id}/jumpers").json))
         self.assertEqual(self.client.get(appearance_url).json, appearance)
+        self.assertEqual(self.client.get(insertion_url).json, insertion_keys)
         self.assertEqual(self.app.test_client().put(f"/api/records/{record_id}/details", data={}).status_code, 401)
 
     def test_trial_results_csv_saved_and_preview_apis(self):

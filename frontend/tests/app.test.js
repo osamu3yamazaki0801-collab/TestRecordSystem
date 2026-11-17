@@ -44,6 +44,19 @@ function appearanceInspection() {
   };
 }
 
+function insertionKeys() {
+  return [
+    { name: 'P31', displayName: 'P31', positions: ['E', 'F', 'G', 'M'], confirmed: false },
+    { name: 'P32', displayName: 'P32', positions: ['E', 'F', 'H', 'L'], confirmed: false },
+    { name: 'P34', displayName: 'P34', positions: ['E', 'F', 'L', 'M'], confirmed: false },
+    { name: 'P33', displayName: 'PS3', positions: ['E', 'H', 'K', 'L'], confirmed: false },
+    { name: 'board:P31', displayName: 'INF265', side: 'board', positions: ['H', 'I', 'K', 'L'], confirmed: false },
+    { name: 'board:P32', displayName: 'PWM85', side: 'board', positions: ['G', 'I', 'K', 'M'], confirmed: false },
+    { name: 'board:P34', displayName: 'INF267', side: 'board', positions: ['G', 'H', 'I', 'K'], confirmed: false },
+    { name: 'board:PS3', displayName: 'PWS132', side: 'board', positions: ['F', 'G', 'I', 'M'], confirmed: false },
+  ];
+}
+
 async function mountApp(url, fetchMock) {
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
     url,
@@ -459,6 +472,7 @@ test('opening a CSV record selects the trial results tab and renders imported da
     if (pathname === '/api/records') return response([record]);
     if (pathname === '/api/records/17/equipment') return response(equipment);
     if (pathname === '/api/records/17/appearance-checks') return response(appearanceInspection());
+    if (pathname === '/api/records/17/insertion-keys') return response(insertionKeys());
     if (pathname === '/api/records/17/jumpers') {
       return response(jumpers);
     }
@@ -642,6 +656,7 @@ test('power board PDF reports upload and preview at the end of the pre-test chec
     if (parsedUrl.pathname === '/api/records') return response([record]);
     if (parsedUrl.pathname === '/api/records/18/equipment') return response(equipment);
     if (parsedUrl.pathname === '/api/records/18/appearance-checks') return response(appearanceInspection());
+    if (parsedUrl.pathname === '/api/records/18/insertion-keys') return response(insertionKeys());
     if (parsedUrl.pathname === '/api/records/18/jumpers') return response(jumpers);
     if (parsedUrl.pathname === '/api/equipment-config') return response({ managerChoices: ['山田太郎'], instrumentChoices: [] });
     if (parsedUrl.pathname === '/api/records/18/power-board-report' && method === 'POST') {
@@ -726,6 +741,9 @@ test('appearance inspection checks cancel, save and retain input on failure with
     if (pathname === '/api/records/19/equipment') return response(equipment);
     if (pathname === '/api/records/19/jumpers') return response([{ name: 'W1', setting: '1-2', confirmed: false }]);
     if (pathname === '/api/records/19/appearance-checks') return response(appearance);
+    if (pathname === '/api/records/19/insertion-keys') {
+      return response(insertionKeys().map((item) => ({ ...item, confirmed: ['P34', 'board:P32'].includes(item.name) })));
+    }
     if (pathname === '/api/equipment-config') return response({ managerChoices: ['山田太郎'], instrumentChoices: [] });
     if (pathname === '/api/records/19/details' && options.method === 'PUT') {
       saves.push(options.body);
@@ -734,6 +752,9 @@ test('appearance inspection checks cancel, save and retain input on failure with
         record, equipment,
         jumperChecks: JSON.parse(options.body.get('jumperChecks')),
         appearanceChecks: JSON.parse(options.body.get('appearanceChecks')),
+        insertionKeys: insertionKeys().map((item) => ({
+          ...item, confirmed: JSON.parse(options.body.get('insertionKeyChecks'))[item.name],
+        })),
       });
     }
     return response({ error: `Unexpected request: ${pathname}` }, 404);
@@ -748,10 +769,45 @@ test('appearance inspection checks cancel, save and retain input on failure with
     const panel = document.getElementById('record-detail-panel-1');
     assert.deepEqual(
       [...panel.querySelectorAll('h3')].map((heading) => heading.textContent),
-      ['外観確認', 'ジャンパ設定', 'インストールソフト', 'PLDバージョン', '電源基板試験成績票'],
+      ['外観確認', '誤挿入キー確認', 'ジャンパ設定', 'インストールソフト', 'PLDバージョン', '電源基板試験成績票'],
     );
     const section = panel.querySelector('.appearance-inspection');
     assert.equal(panel.firstElementChild, section);
+    const insertion = panel.querySelector('.insertion-key-inspection');
+    const sides = insertion.querySelector('.insertion-key-layout > .insertion-key-sides');
+    assert.deepEqual([...sides.children].map((side) => side.querySelector('.insertion-key-instruction').textContent),
+      ['バックボード側', '基板側']);
+    const insertionTable = insertion.querySelector('table');
+    assert.equal(insertion.querySelector('.insertion-key-instruction').textContent, 'バックボード側');
+    assert.deepEqual([...insertionTable.tHead.rows[0].cells].map((cell) => cell.textContent),
+      ['位置', 'P31', 'P32', 'P34', 'PS3']);
+    const positionRows = [...insertionTable.tBodies[0].rows].slice(0, -1);
+    assert.deepEqual(positionRows.map((row) => row.cells[0].textContent),
+      ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'K', 'L', 'M']);
+    assert.deepEqual([1, 2, 3, 4].map((column) => positionRows
+      .filter((row) => row.cells[column].querySelector('.insertion-key-slot--filled'))
+      .map((row) => row.cells[0].textContent)),
+    [['E', 'F', 'G', 'M'], ['E', 'F', 'H', 'L'], ['E', 'F', 'L', 'M'], ['E', 'H', 'K', 'L']]);
+    assert.ok([...insertionTable.rows].slice(0, -1).every((row) => row.cells.length === 5));
+    assert.equal(insertionTable.tBodies[0].rows[12].cells[0].textContent, '確認');
+    assert.equal(insertionTable.tBodies[0].rows[12].cells[1].colSpan, 4);
+    const boardTable = insertion.querySelector('table[aria-label="基板側の誤挿入キー確認"]');
+    assert.deepEqual([...boardTable.tHead.rows[0].cells].map((cell) => cell.textContent),
+      ['位置', 'INF265', 'PWM85', 'INF267', 'PWS132']);
+    const boardRows = [...boardTable.tBodies[0].rows].slice(0, -1);
+    assert.deepEqual(boardRows.map((row) => row.cells[0].textContent),
+      ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'K', 'L', 'M']);
+    assert.deepEqual([1, 2, 3, 4].map((column) => boardRows
+      .filter((row) => row.cells[column].querySelector('.insertion-key-slot--filled'))
+      .map((row) => row.cells[0].textContent)),
+    [['H', 'I', 'K', 'L'], ['G', 'I', 'K', 'M'], ['G', 'H', 'I', 'K'], ['F', 'G', 'I', 'M']]);
+    assert.ok([...boardTable.rows].slice(0, -1).every((row) => row.cells.length === 5));
+    assert.equal(boardTable.tBodies[0].rows[12].cells[1].colSpan, 4);
+    assert.equal(insertion.querySelectorAll('input[type="checkbox"]').length, 2);
+    const boardCheck = boardTable.querySelector('input[aria-label="基板側の誤挿入キーを確認"]');
+    assert.equal(boardCheck.checked, false);
+    const connectorCheck = insertionTable.querySelector('input[aria-label="バックボード側の誤挿入キーを確認"]');
+    assert.equal(connectorCheck.checked, false);
     const table = section.querySelector('table');
     assert.equal(table.querySelectorAll('tbody').length, 8);
     assert.equal(table.querySelectorAll('tbody tr').length, 11);
@@ -778,7 +834,19 @@ test('appearance inspection checks cancel, save and retain input on failure with
     assert.equal(dustCap.checked, true);
     assert.equal(revision.checked, false);
     await click(app.dom, revision);
+    const saveButton = document.querySelector('button[form="record-edit-form"]');
+    await click(app.dom, saveButton);
+    await waitFor(() => saves.length === 1, 'save was not submitted');
+    assert.deepEqual(JSON.parse(saves[0].get('insertionKeyChecks')), {
+      P31: false, P32: false, P34: true, P33: false,
+      'board:P31': false, 'board:P32': true, 'board:P34': false, 'board:PS3': false,
+    });
+    saves.length = 0;
+    await click(app.dom, connectorCheck);
+    assert.equal(boardCheck.checked, false, 'checking one side should not affect the other');
+    await click(app.dom, boardCheck);
     assert.equal(revision.checked, true);
+    assert.equal(connectorCheck.checked, true);
     assert.equal(revision.nextElementSibling.textContent, '✅');
     assert.equal(saves.length, 0, 'toggling should wait for the shared save');
     assert.ok(document.querySelector('.status-text.warning'));
@@ -787,15 +855,20 @@ test('appearance inspection checks cancel, save and retain input on failure with
       .find((button) => button.textContent === 'キャンセル');
     await click(app.dom, cancelButton);
     assert.equal(revision.checked, false);
+    assert.equal(connectorCheck.checked, false);
+    assert.equal(boardCheck.checked, false);
     assert.equal(dustCap.checked, true);
     await click(app.dom, revision);
+    await click(app.dom, connectorCheck);
+    await click(app.dom, boardCheck);
     const seal = table.querySelector('input[aria-label="AUX 封印確認を確認"]');
     await click(app.dom, seal);
-    const saveButton = document.querySelector('button[form="record-edit-form"]');
     await click(app.dom, saveButton);
     await waitFor(() => saves.length === 1, 'save was not submitted');
     assert.ok(document.body.textContent.includes('外観確認の保存に失敗しました。'));
     assert.equal(revision.checked, true);
+    assert.equal(connectorCheck.checked, true);
+    assert.equal(boardCheck.checked, true);
     assert.ok(document.querySelector('.status-text.warning'));
     failSave = false;
     await click(app.dom, saveButton);
@@ -803,10 +876,23 @@ test('appearance inspection checks cancel, save and retain input on failure with
     assert.equal(JSON.parse(saves[1].get('appearanceChecks'))['boardRevision:PWS132'], true);
     assert.equal(JSON.parse(saves[1].get('appearanceChecks'))['dustCap:MDM57'], true);
     assert.equal(JSON.parse(saves[1].get('appearanceChecks'))['seal:AUX'], true);
+    assert.deepEqual(JSON.parse(saves[1].get('insertionKeyChecks')), {
+      P31: true, P32: true, P34: true, P33: true,
+      'board:P31': true, 'board:P32': true, 'board:P34': true, 'board:PS3': true,
+    });
     assert.equal(document.querySelector('.status-text.warning'), null);
     await click(app.dom, revision);
+    await click(app.dom, connectorCheck);
+    await click(app.dom, boardCheck);
     await click(app.dom, cancelButton);
     assert.equal(revision.checked, true, 'cancel should restore the latest successful save');
+    assert.equal(connectorCheck.checked, true, 'cancel should restore the saved connector check');
+    assert.equal(boardCheck.checked, true, 'cancel should restore the saved board check');
+    await click(app.dom, connectorCheck);
+    await click(app.dom, boardCheck);
+    await click(app.dom, saveButton);
+    await waitFor(() => saves.length === 3, 'clearing both sides was not submitted');
+    assert.ok(Object.values(JSON.parse(saves[2].get('insertionKeyChecks'))).every((checked) => checked === false));
   } finally {
     await app.cleanup();
   }

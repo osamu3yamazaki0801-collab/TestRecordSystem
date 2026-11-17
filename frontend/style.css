@@ -1623,6 +1623,75 @@ tbody tr:last-child td {
   background: #fff;
 }
 
+.insertion-key-instruction {
+  margin: 0 0 8px;
+  font-size: 0.8rem;
+}
+
+.insertion-key-layout {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.insertion-key-sides {
+  display: flex;
+  align-items: flex-start;
+  gap: 24px;
+  width: max-content;
+}
+
+.insertion-key-side {
+  flex: none;
+}
+
+.insertion-key-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.insertion-key-table {
+  width: 460px;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.insertion-key-position-column { width: 60px; }
+.insertion-key-connector-column { width: 100px; }
+
+.insertion-key-table th,
+.insertion-key-table td {
+  padding: 3px 4px;
+  border: 0;
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  text-align: center;
+  vertical-align: middle;
+}
+
+.insertion-key-table tr > :first-child {
+  border-left: 1px solid var(--border);
+}
+
+.insertion-key-table thead th {
+  border-top: 1px solid var(--border);
+}
+
+.insertion-key-table tbody tr:last-child td {
+  border-bottom: 1px solid var(--border);
+}
+
+.insertion-key-slot {
+  display: inline-block;
+  width: 19px;
+  height: 19px;
+  border: 1px solid var(--text);
+  vertical-align: middle;
+}
+
+.insertion-key-slot--filled {
+  background: var(--text);
+}
+
 .jumper-table-wrap {
   width: 18%;
   min-width: 0;

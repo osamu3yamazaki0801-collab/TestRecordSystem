@@ -5,10 +5,12 @@
     "instrumentChoices配列に計測器名(name)と管理番号(managementNo)を指定すると、計測器欄の候補に表示されます。入力した計測器名がnameと一致すると、管理番号が自動入力されます。",
     "instrumentChoicesのnameは重複できず、配列は50件以内にしてください。候補以外の計測器名・管理番号も画面で自由入力できます。",
     "jumpers配列の要素数がジャンパ設定の表示行数になります。各項目に一意なnameとsettingを指定し、最大50件まで設定できます。未指定の場合はW1・W2が表示されます。",
+    "softwareSectionsで受入検査のインストールソフトとPLDバージョン等を設定します。各sectionに一意なkey・title・rowsを指定し、rowsの各要素にnameとsdFormatを指定します。",
     "appearanceInspectionで外観確認を設定します。boardGroupsは見出し名(name)と基板名の配列(boards)、itemsは表示順の確認項目です。項目を追加すると表にも追加されます（最大50項目・基板列は合計50件）。",
     "appearanceInspection.itemsの各項目には一意なkey、項目名(name)、表示行数(rows: 1または2)、基板別の基準値(values)を指定します。rowsが1なら1行に基準値とチェック、2なら上段に基準値・下段にチェックを表示します。",
     "valuesの空文字は基準値なしのチェック欄です。基板名を省略すると対象外の「-」になります。keyは英字で始まる半角英数字・_・-の50文字以内、名前・基準値は各100文字以内です。itemsを空配列にすると確認項目は表示されません。",
     "外観確認のkeyは保存結果の識別に使うため、並べ替えや表示行数の変更時は維持してください。項目名・基準値が変わったセルは未確認になります。設定変更後はサーバーを再起動してください。",
+    "manualTestsで試験結果タブ先頭の手動試験を設定します。各試験に一意なkey・number・name・areaとitems配列を指定し、各測定項目に一意なkey・name・lowerLimit・upperLimit・unit・benchLockを指定します。lowerLimitからupperLimitまでを正常範囲として判定します。",
     "managerChoices配列に担当者名を設定すると、新規登録・変更画面の担当者ドロップダウン候補に表示されます。重複しない日本語の名前を30文字以内で最大100件設定してください。",
     "JSONでは//や/* ... */のコメントは使えません。要素を無効にする場合はコメントアウトせず削除してください。"
   ],
@@ -33,6 +35,40 @@
     { "name": "MDM57",  "serialNumber": "" },
     { "name": "INF271", "serialNumber": "" },
     { "name": "INF267", "serialNumber": "" }
+  ],
+  "manualTests": [
+    {
+      "key": "powerSupply",
+      "number": "1(B1)",
+      "name": "電源確認",
+      "area": "PWS132",
+      "items": [
+        { "key": "ac50uv", "name": "AC50", "lowerLimit": "49.0", "upperLimit": "51.0", "unit": "V", "benchLock": true },
+        { "key": "p24a1", "name": "P24", "lowerLimit": 23.52, "upperLimit": 24.48, "unit": "V", "benchLock": true },
+        { "key": "p15a1", "name": "P15", "lowerLimit": 14.70, "upperLimit": 15.30, "unit": "V", "benchLock": true },
+        { "key": "n15a1", "name": "N15", "lowerLimit": -15.30, "upperLimit": -14.70, "unit": "V", "benchLock": true },
+        { "key": "p5a1", "name": "P5", "lowerLimit": 4.90, "upperLimit": 5.10, "unit": "V", "benchLock": true }
+      ]
+    },
+    {
+      "key": "voltageDropDetection",
+      "number": "2(B22)",
+      "name": "電源電圧低下検知回路確認",
+      "area": "PWM85\nBATLV",
+      "items": [
+        { "key": "detect", "name": "検知", "lowerLimit": "54.0", "upperLimit": "56.0", "unit": "V", "benchLock": false },
+        { "key": "restore", "name": "復帰", "lowerLimit": "56.0", "upperLimit": "60.0", "unit": "V", "benchLock": false }
+      ]
+    },
+    {
+      "key": "opticalTransmission",
+      "number": "3(B13)",
+      "name": "光AO 光量測定",
+      "area": "PWM85",
+      "items": [
+        { "key": "opticalLevel", "name": "", "lowerLimit": "-15.0", "upperLimit": "-9.0", "unit": "dBm", "benchLock": false }
+      ]
+    }
   ],
   "appearanceInspection": {
     "boardGroups": [
@@ -72,6 +108,23 @@
     { "name": "MDM57-JP3", "setting": "CLOSE" },
     { "name": "MDM57-JP4", "setting": "CLOSE" },
     { "name": "MDM57-JP5", "setting": "CLOSE" }
+  ],
+  "softwareSections": [
+    {
+      "key": "software-install",
+      "title": "インストールソフト",
+      "rows": [
+        { "name": "テストプロ", "sdFormat": "TEST0306" }
+      ]
+    },
+    {
+      "key": "pld-version",
+      "title": "PLDバージョン",
+      "rows": [
+        { "name": "PWM85 基板 FPGA", "sdFormat": "XPLD0921" },
+        { "name": "INF267 基板 FPGA", "sdFormat": "XPLD0856" }
+      ]
+    }
   ],
   "instrumentChoices": [
     {

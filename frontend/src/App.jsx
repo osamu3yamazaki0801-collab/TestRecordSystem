@@ -10,6 +10,21 @@ const MAX_COMMON_PANEL_WIDTH = 640;
 const MIN_WORKSPACE_WIDTH = 280;
 const DETAIL_RESIZER_WIDTH = 12;
 const DETAIL_COLUMN_GAP = 24;
+const DEFAULT_SOFTWARE_SECTIONS = [
+  {
+    key: 'software-install',
+    title: 'インストールソフト',
+    rows: [{ name: 'テストプロ', sdFormat: 'TEST0306' }],
+  },
+  {
+    key: 'pld-version',
+    title: 'PLDバージョン',
+    rows: [
+      { name: 'PWM85 基板 FPGA', sdFormat: 'XPLD0885' },
+      { name: 'INF267 基板 FPGA', sdFormat: 'XPLD0856' },
+    ],
+  },
+];
 const SECTION_DETAILS = {
   dashboardSection: {
     title: '試験記録の管理',
@@ -329,10 +344,13 @@ function App() {
   const [detailEquipment, setDetailEquipment] = useState(null);
   const [instrumentChoices, setInstrumentChoices] = useState([]);
   const [managerChoices, setManagerChoices] = useState(null);
+  const [softwareSections, setSoftwareSections] = useState(DEFAULT_SOFTWARE_SECTIONS);
   const [detailJumpers, setDetailJumpers] = useState(null);
   const [detailAppearance, setDetailAppearance] = useState(null);
   const [detailInsertionKeys, setDetailInsertionKeys] = useState(null);
-  const savedDetails = useRef({ equipment: null, jumpers: null, appearance: null, insertionKeys: null });
+  const [detailManualTests, setDetailManualTests] = useState(null);
+  const [detailManualConditions, setDetailManualConditions] = useState(null);
+  const savedDetails = useRef({ equipment: null, jumpers: null, appearance: null, insertionKeys: null, manualTests: null, manualConditions: null });
   const [detailMessage, setDetailMessage] = useState({ text: '', type: '' });
   const [recordDirty, setRecordDirty] = useState(false);
 
@@ -360,6 +378,7 @@ function App() {
     apiRequest('/api/equipment-config', csrfToken.current).then((config) => {
       if (!active) return;
       setManagerChoices(config.managerChoices);
+      setSoftwareSections(config.softwareSections || DEFAULT_SOFTWARE_SECTIONS);
     }).catch((error) => {
       if (!active) return;
       setManagerChoices([]);
@@ -438,7 +457,9 @@ function App() {
       apiRequest('/api/equipment-config', csrfToken.current),
       apiRequest(`/api/records/${detailRecordId}/appearance-checks`, csrfToken.current),
       apiRequest(`/api/records/${detailRecordId}/insertion-keys`, csrfToken.current),
-    ]).then(([result, equipment, jumpers, config, appearance, insertionKeys]) => {
+      apiRequest(`/api/records/${detailRecordId}/manual-tests`, csrfToken.current),
+      apiRequest(`/api/records/${detailRecordId}/manual-test-conditions`, csrfToken.current),
+    ]).then(([result, equipment, jumpers, config, appearance, insertionKeys, manualTests, manualConditions]) => {
       if (!active) return;
       const record = result.find((item) => String(item.id) === detailRecordId);
       if (!record) {
@@ -449,10 +470,14 @@ function App() {
       setDetailEquipment(equipment);
       setInstrumentChoices(config.instrumentChoices);
       setManagerChoices(config.managerChoices);
+      setSoftwareSections(config.softwareSections || DEFAULT_SOFTWARE_SECTIONS);
       setDetailJumpers(jumpers);
       setDetailAppearance(appearance);
       setDetailInsertionKeys(insertionKeys);
-      savedDetails.current = { equipment, jumpers, appearance, insertionKeys };
+      const loadedManualTests = Array.isArray(manualTests) ? manualTests : [];
+      setDetailManualTests(loadedManualTests);
+      setDetailManualConditions(manualConditions);
+      savedDetails.current = { equipment, jumpers, appearance, insertionKeys, manualTests: loadedManualTests, manualConditions };
       setDetailMessage({ text: '', type: '' });
     }).catch((error) => {
       if (!active) return;
@@ -529,7 +554,9 @@ function App() {
     setDetailJumpers(null);
     setDetailAppearance(null);
     setDetailInsertionKeys(null);
-    savedDetails.current = { equipment: null, jumpers: null, appearance: null, insertionKeys: null };
+    setDetailManualTests(null);
+    setDetailManualConditions(null);
+    savedDetails.current = { equipment: null, jumpers: null, appearance: null, insertionKeys: null, manualTests: null, manualConditions: null };
   }
 
   // ログイン処理。
@@ -591,7 +618,7 @@ function App() {
     const formData = new FormData(form);
     const isEditing = editingRecordId !== null;
     if (isEditing) {
-      if (!detailEquipment || !detailJumpers || !detailAppearance || !detailInsertionKeys) {
+      if (!detailEquipment || !detailJumpers || !detailAppearance || !detailInsertionKeys || !detailManualTests || !detailManualConditions) {
         setRegisterMessage({ text: '詳細情報の読み込みが完了していません。', type: 'error' });
         return;
       }
@@ -609,6 +636,16 @@ function App() {
       formData.set('insertionKeyChecks', JSON.stringify(Object.fromEntries(
         detailInsertionKeys.map((connector) => [connector.name, connector.confirmed]),
       )));
+      formData.set('manualTestResults', JSON.stringify(Object.fromEntries(
+        detailManualTests.flatMap((test) => test.items).map((item) => [
+          item.key,
+          {
+            measuredValue: item.measuredValue,
+            benchLockChecked: item.benchLockChecked,
+          },
+        ]),
+      )));
+      formData.set('manualTestConditions', JSON.stringify(detailManualConditions));
     }
     const fieldNames = ['trialNo', 'projectName', 'productNo', 'registrationDate', 'manager'];
     const valuesList = isEditing
@@ -688,9 +725,12 @@ function App() {
         setDetailJumpers(updatedJumpers);
         setDetailAppearance(updatedAppearance);
         setDetailInsertionKeys(result.insertionKeys);
+        setDetailManualTests(result.manualTests);
+        setDetailManualConditions(result.manualTestConditions);
         savedDetails.current = {
           equipment: result.equipment, jumpers: updatedJumpers,
           appearance: updatedAppearance, insertionKeys: result.insertionKeys,
+          manualTests: result.manualTests, manualConditions: result.manualTestConditions,
         };
       } else {
         const createdRecords = result.records || [{
@@ -815,6 +855,8 @@ function App() {
       setDetailJumpers(savedDetails.current.jumpers);
       setDetailAppearance(savedDetails.current.appearance);
       setDetailInsertionKeys(savedDetails.current.insertionKeys);
+      setDetailManualTests(savedDetails.current.manualTests);
+      setDetailManualConditions(savedDetails.current.manualConditions);
     } else {
       if (recordDirty && !window.confirm('未保存の入力を破棄して記録の検索画面へ移動しますか？')) return;
       clearRegistrationDraft();
@@ -885,6 +927,11 @@ function App() {
             setAppearance={setDetailAppearance}
             insertionKeys={detailInsertionKeys}
             setInsertionKeys={setDetailInsertionKeys}
+            manualTests={detailManualTests}
+            setManualTests={setDetailManualTests}
+            softwareSections={softwareSections}
+            manualConditions={detailManualConditions}
+            setManualConditions={setDetailManualConditions}
             onDirty={() => setRecordDirty(true)}
             cancelRegister={cancelRegister}
             registerMessage={registerMessage}
@@ -1175,7 +1222,7 @@ function RegistrationForm({ registerForm, handleRegister, registrationRows, setR
   );
 }
 
-function RecordDetails({ record, onClose, recordDirty, registering, registrationForm, equipment, instrumentChoices, setEquipment, jumpers, setJumpers, appearance, setAppearance, insertionKeys, setInsertionKeys, onDirty, cancelRegister, registerMessage, pendingFiles, existingFiles, onFilesChanged, onPowerBoardReportChanged, csrfToken, setAuthenticated, setLoginError }) {
+function RecordDetails({ record, onClose, recordDirty, registering, registrationForm, equipment, instrumentChoices, softwareSections, setEquipment, jumpers, setJumpers, appearance, setAppearance, insertionKeys, setInsertionKeys, manualTests, setManualTests, manualConditions, setManualConditions, onDirty, cancelRegister, registerMessage, pendingFiles, existingFiles, onFilesChanged, onPowerBoardReportChanged, csrfToken, setAuthenticated, setLoginError }) {
   const [activeTab, setActiveTab] = useState(() => (
     existingFiles.some((file) => /\.csv$/i.test(file.fileName)) ? 2 : 0
   ));
@@ -1367,7 +1414,7 @@ function RecordDetails({ record, onClose, recordDirty, registering, registration
         {registrationForm}
         <div className="button-row">
           {recordDirty && <span className="status-text warning">未保存</span>}
-          <button type="submit" form="record-edit-form" className="primary-button" disabled={registering || fileActionPending || reportActionPending || !equipment || !jumpers || !appearance || !insertionKeys}>
+          <button type="submit" form="record-edit-form" className="primary-button" disabled={registering || fileActionPending || reportActionPending || !equipment || !jumpers || !appearance || !insertionKeys || !manualTests || !manualConditions}>
             {registering ? '保存中...' : '保存'}
           </button>
           <button type="button" className="secondary-button" disabled={registering || fileActionPending || reportActionPending} onClick={cancelRegister}>キャンセル</button>
@@ -1455,7 +1502,7 @@ function RecordDetails({ record, onClose, recordDirty, registering, registration
                   </table>
                 </div>
               ) : <Message>読み込み中...</Message>}
-              <EquipmentForm equipment={equipment} setEquipment={setEquipment} disabled={registering} onDirty={onDirty} groupKeys={['software']} />
+              <EquipmentForm equipment={equipment} softwareSections={softwareSections} setEquipment={setEquipment} disabled={registering} onDirty={onDirty} groupKeys={['software']} />
               <section className="power-board-report-section" aria-labelledby="power-board-report-title">
                 <h3 id="power-board-report-title">電源基板試験成績票</h3>
                 {record.powerBoardReport ? (
@@ -1504,6 +1551,14 @@ function RecordDetails({ record, onClose, recordDirty, registering, registration
           )}
           {index === 2 && (
             <>
+              <ManualTrialResults
+                tests={manualTests}
+                setTests={setManualTests}
+                conditions={manualConditions}
+                setConditions={setManualConditions}
+                disabled={registering}
+                onDirty={onDirty}
+              />
               {existingFiles.length === 0 && (
                 <div className="result-file-registration">
                   <h2>試験結果CSVを登録</h2>
@@ -1538,6 +1593,140 @@ function RecordDetails({ record, onClose, recordDirty, registering, registration
           )}
         </div>
       ))}
+      </div>
+    </section>
+  );
+}
+
+function manualJudgement(value, lowerLimit, upperLimit) {
+  if (!value.trim()) return '';
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 'NG';
+  return number >= Number(lowerLimit) && number <= Number(upperLimit) ? 'PASS' : 'NG';
+}
+
+function formatManualLimit(value) {
+  if (typeof value === 'string') return value;
+  return Number.isInteger(value) ? String(value) : value.toFixed(2);
+}
+
+function ManualTrialResults({ tests, setTests, conditions, setConditions, disabled, onDirty }) {
+  if (!tests || !conditions) return <Message>手動試験を読み込み中...</Message>;
+
+  function updateItem(itemKey, values) {
+    setTests((current) => current.map((test) => ({
+      ...test,
+      items: test.items.map((item) => item.key === itemKey ? { ...item, ...values } : item),
+    })));
+    onDirty();
+  }
+
+  function updateCondition(name, value) {
+    setConditions((current) => ({ ...current, [name]: value }));
+    onDirty();
+  }
+
+  return (
+    <section className="manual-results-section" aria-labelledby="manual-results-title">
+      <h2 id="manual-results-title">手動試験</h2>
+      <div className="manual-test-conditions" aria-label="試験環境">
+        <label>
+          <span>温度</span>
+          <input
+            type="text"
+            inputMode="decimal"
+            value={conditions.temperature}
+            maxLength={100}
+            disabled={disabled}
+            aria-label="温度"
+            onChange={(event) => updateCondition('temperature', event.target.value)}
+          />
+          <span>℃</span>
+        </label>
+        <label>
+          <span>湿度</span>
+          <input
+            type="text"
+            inputMode="decimal"
+            value={conditions.humidity}
+            maxLength={100}
+            disabled={disabled}
+            aria-label="湿度"
+            onChange={(event) => updateCondition('humidity', event.target.value)}
+          />
+          <span>%RH</span>
+        </label>
+      </div>
+      {tests.length === 0 && <p>手動試験項目はありません。</p>}
+      <div className="manual-results-table-wrap">
+        <table className="manual-results-table" aria-label="手動試験結果">
+          <thead>
+            <tr>
+              <th scope="col">No.</th>
+              <th scope="col">試験項目</th>
+              <th scope="col">区分</th>
+              <th scope="col">規定値</th>
+              <th scope="col">測定値</th>
+              <th scope="col">判定</th>
+              <th scope="col">ペンキロック</th>
+            </tr>
+          </thead>
+          {tests.map((test) => (
+            <tbody key={test.key}>
+              {test.items.map((item, index) => {
+                const judgement = manualJudgement(
+                  item.measuredValue,
+                  item.lowerLimit,
+                  item.upperLimit,
+                );
+                return (
+                  <tr key={item.key} className={judgement === 'NG' ? 'manual-failed-row' : ''}>
+                    {index === 0 && (
+                      <>
+                        <th scope="rowgroup" rowSpan={test.items.length}>{test.number}</th>
+                        <th scope="rowgroup" rowSpan={test.items.length}>{test.name}</th>
+                        <th scope="rowgroup" rowSpan={test.items.length}>{test.area}</th>
+                      </>
+                    )}
+                    <td className="manual-section-value">
+                      {item.name && <span className="manual-item-name">{item.name}</span>}
+                      <span>{formatManualLimit(item.lowerLimit)} ～ {formatManualLimit(item.upperLimit)} {item.unit}</span>
+                    </td>
+                    <td>
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        aria-label={`${test.name} ${item.name}の測定値`}
+                        value={item.measuredValue}
+                        maxLength={100}
+                        disabled={disabled}
+                        onChange={(event) => updateItem(item.key, { measuredValue: event.target.value })}
+                      />
+                    </td>
+                    <td>
+                      <span className={`manual-judgement ${judgement === 'PASS' ? 'pass' : judgement === 'NG' ? 'fail' : 'unjudged'}`}>
+                        {judgement || '－'}
+                      </span>
+                    </td>
+                    <td>
+                      {item.benchLock ? (
+                        <input
+                          type="checkbox"
+                          aria-label={`${test.name} ${item.name}のペンキロックを確認`}
+                          checked={item.benchLockChecked}
+                          disabled={disabled}
+                          onChange={(event) => updateItem(item.key, {
+                            benchLockChecked: event.target.checked,
+                          })}
+                        />
+                      ) : '－'}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          ))}
+        </table>
       </div>
     </section>
   );
@@ -1752,27 +1941,9 @@ const EQUIPMENT_SECTIONS = [
       { key: 'testItems', label: '試験項目' },
     ],
   },
-  {
-    key: 'software', sectionId: 'software-install', title: 'インストールソフト', rowIndexes: [0],
-    columns: [
-      { key: 'name', label: 'ソフト', fixed: true },
-      { key: 'sdFormat', label: 'SD 形式', fixed: true },
-      { key: 'version', label: 'バージョン' },
-      { key: 'checksum', label: 'チェックサム' },
-    ],
-  },
-  {
-    key: 'software', sectionId: 'pld-version', title: 'PLDバージョン', rowIndexes: [1, 2],
-    columns: [
-      { key: 'name', label: 'ソフト', fixed: true },
-      { key: 'sdFormat', label: 'SD 形式', fixed: true },
-      { key: 'version', label: 'バージョン' },
-      { key: 'checksum', label: 'チェックサム' },
-    ],
-  },
 ];
 
-function EquipmentForm({ equipment, instrumentChoices = [], setEquipment, disabled, onDirty, groupKeys }) {
+function EquipmentForm({ equipment, instrumentChoices = [], softwareSections = [], setEquipment, disabled, onDirty, groupKeys }) {
   function changeField(group, rowIndex, field, value) {
     setEquipment((current) => ({
       ...current,
@@ -1795,6 +1966,25 @@ function EquipmentForm({ equipment, instrumentChoices = [], setEquipment, disabl
   if (!equipment) {
     return <Message>機器情報を読み込み中...</Message>;
   }
+  const softwareGroups = groupKeys.includes('software')
+    ? softwareSections.map((section, sectionIndex) => {
+      const rowOffset = softwareSections
+        .slice(0, sectionIndex)
+        .reduce((total, current) => total + current.rows.length, 0);
+      return {
+        key: 'software',
+        sectionId: section.key,
+        title: section.title,
+        rowIndexes: section.rows.map((_, index) => rowOffset + index),
+        columns: [
+          { key: 'name', label: 'ソフト', fixed: true },
+          { key: 'sdFormat', label: 'SD 形式', fixed: true },
+          { key: 'version', label: 'バージョン' },
+          { key: 'checksum', label: 'チェックサム' },
+        ],
+      };
+    })
+    : [];
 
   return (
     <div className="equipment-form" aria-busy={disabled}>
@@ -1804,7 +1994,7 @@ function EquipmentForm({ equipment, instrumentChoices = [], setEquipment, disabl
             {instrumentChoices.map((choice) => <option key={choice.name} value={choice.name} />)}
           </datalist>
         )}
-        {EQUIPMENT_SECTIONS.filter((group) => groupKeys.includes(group.key)).map((group) => (
+        {[...EQUIPMENT_SECTIONS.filter((group) => groupKeys.includes(group.key)), ...softwareGroups].map((group) => (
           <section key={group.sectionId || group.key} aria-labelledby={`equipment-${group.sectionId || group.key}-heading`}>
             <h3 id={`equipment-${group.sectionId || group.key}-heading`} className="jumper-heading">{group.title}</h3>
             <div className="equipment-table-wrap">

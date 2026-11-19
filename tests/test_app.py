@@ -717,7 +717,12 @@ class LedgerAppTests(unittest.TestCase):
 
         self.assertEqual(
             configured_client.get("/api/equipment-config").json,
-            {"instrumentChoices": choices, "managerChoices": managers},
+            {
+                "instrumentChoices": choices,
+                "managerChoices": managers,
+                "manualTests": [],
+                "softwareSections": self.app.config["SOFTWARE_SECTIONS"],
+            },
         )
         equipment = configured_client.get(f"/api/records/{record_id}/equipment").json
         self.assertEqual(len(equipment["instruments"]), 5)
@@ -780,6 +785,171 @@ class LedgerAppTests(unittest.TestCase):
                 "EQUIPMENT_CONFIG_PATH": str(config_path),
                 "DATABASE_PATH": str(Path(self.temp_dir.name) / "invalid.sqlite3"),
             })
+
+    def test_software_sections_are_configurable_and_preserve_matching_values(self):
+        self.login()
+        record_id = self.client.post(
+            "/api/records", data=self.record_data(),
+            headers={"X-CSRF-Token": self.csrf_token},
+        ).json["id"]
+        software_sections = [{
+            "key": "firmware",
+            "title": "ファームウェア",
+            "rows": [
+                {"name": "制御ソフト", "sdFormat": "CTRL001"},
+                {"name": "追加PLD", "sdFormat": "PLD002"},
+            ],
+        }]
+        config_path = Path(self.temp_dir.name) / "software-sections.json"
+        config_path.write_text(
+            json.dumps({
+                "jumpers": self.app.config["JUMPERS"],
+                "softwareSections": software_sections,
+            }),
+            encoding="utf-8",
+        )
+        configured_app = create_app({
+            **self.app.config,
+            "EQUIPMENT_CONFIG_PATH": str(config_path),
+        })
+        configured_client = configured_app.test_client()
+        with configured_client.session_transaction() as session:
+            session["username"] = "operator"
+
+        url = f"/api/records/{record_id}/equipment"
+        equipment = configured_client.get(url).json
+        self.assertEqual(equipment["software"], [
+            {
+                "name": "制御ソフト", "sdFormat": "CTRL001",
+                "version": "", "checksum": "",
+            },
+            {
+                "name": "追加PLD", "sdFormat": "PLD002",
+                "version": "", "checksum": "",
+            },
+        ])
+        equipment["software"][0]["version"] = "1.2.3"
+        equipment["software"][0]["checksum"] = "ABC123"
+        csrf = configured_client.get("/api/session").json["csrfToken"]
+        response = configured_client.put(
+            url,
+            json=equipment,
+            headers={"X-CSRF-Token": csrf},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            configured_client.get(url).json["software"][0]["version"],
+            "1.2.3",
+        )
+        self.assertEqual(
+            configured_client.get("/api/equipment-config").json["softwareSections"],
+            software_sections,
+        )
+
+    def test_manual_tests_are_configured_judged_and_saved(self):
+        self.login()
+        record_id = self.client.post(
+            "/api/records", data=self.record_data(),
+            headers={"X-CSRF-Token": self.csrf_token},
+        ).json["id"]
+        manual_tests = [{
+            "key": "power",
+            "number": "1",
+            "name": "電源確認",
+            "area": "PWS132",
+            "items": [{
+                "key": "voltage",
+                "name": "P24A1",
+                "lowerLimit": 23.52,
+                "upperLimit": 24.48,
+                "unit": "V",
+                "benchLock": True,
+            }],
+        }]
+        config_path = Path(self.temp_dir.name) / "manual-tests.json"
+        config_path.write_text(json.dumps({
+            "jumpers": self.app.config["JUMPERS"],
+            "manualTests": manual_tests,
+        }), encoding="utf-8")
+        configured_app = create_app({
+            **self.app.config,
+            "EQUIPMENT_CONFIG_PATH": str(config_path),
+        })
+        configured_client = configured_app.test_client()
+        with configured_client.session_transaction() as session:
+            session["username"] = "operator"
+
+        url = f"/api/records/{record_id}/manual-tests"
+        initial = configured_client.get(url).json
+        self.assertEqual(initial[0]["items"][0]["measuredValue"], "")
+        self.assertEqual(initial[0]["items"][0]["judgement"], "")
+        condition_url = f"/api/records/{record_id}/manual-test-conditions"
+        self.assertEqual(
+            configured_client.get(condition_url).json,
+            {"temperature": "", "humidity": ""},
+        )
+
+        equipment = configured_client.get(f"/api/records/{record_id}/equipment").json
+        appearance = configured_client.get(
+            f"/api/records/{record_id}/appearance-checks"
+        ).json
+        insertion_keys = configured_client.get(
+            f"/api/records/{record_id}/insertion-keys"
+        ).json
+        jumper_checks = {
+            jumper["name"]: jumper["confirmed"]
+            for jumper in configured_client.get(
+                f"/api/records/{record_id}/jumpers"
+            ).json
+        }
+        csrf = configured_client.get("/api/session").json["csrfToken"]
+        response = configured_client.put(
+            f"/api/records/{record_id}/details",
+            data=self.record_data(
+                equipment=json.dumps(equipment),
+                jumperChecks=json.dumps(jumper_checks),
+                appearanceChecks=json.dumps(appearance["checks"]),
+                insertionKeyChecks=json.dumps({
+            item["name"]: item["confirmed"] for item in insertion_keys
+                }),
+                manualTestResults=json.dumps({
+            "voltage": {
+                "measuredValue": "24.00",
+                "benchLockChecked": True,
+            },
+                }),
+                manualTestConditions=json.dumps({
+            "temperature": "23.0",
+            "humidity": "45",
+                }),
+            ),
+            headers={"X-CSRF-Token": csrf},
+        )
+        self.assertEqual(response.status_code, 200)
+        saved = configured_client.get(url).json[0]["items"][0]
+        self.assertEqual(saved["measuredValue"], "24.00")
+        self.assertEqual(saved["judgement"], "PASS")
+        self.assertTrue(saved["benchLockChecked"])
+        self.assertEqual(
+            configured_client.get(condition_url).json,
+            {"temperature": "23.0", "humidity": "45"},
+        )
+
+        manual_tests[0]["items"][0]["upperLimit"] = 23.90
+        config_path.write_text(json.dumps({
+            "jumpers": self.app.config["JUMPERS"],
+            "manualTests": manual_tests,
+        }), encoding="utf-8")
+        restarted = create_app({
+            **self.app.config,
+            "EQUIPMENT_CONFIG_PATH": str(config_path),
+        }).test_client()
+        with restarted.session_transaction() as session:
+            session["username"] = "operator"
+        changed = restarted.get(url).json[0]["items"][0]
+        self.assertEqual(changed["measuredValue"], "")
+        self.assertEqual(changed["judgement"], "")
+        self.assertFalse(changed["benchLockChecked"])
 
     def test_appearance_config_adds_rows_and_preserves_only_matching_checks(self):
         self.login()

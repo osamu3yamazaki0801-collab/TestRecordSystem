@@ -1419,6 +1419,122 @@ tbody tr:last-child td {
   cursor: default;
 }
 
+.manual-results-section {
+  margin-bottom: 28px;
+}
+
+.manual-results-section h2 {
+  margin: 0 0 12px;
+  font-size: 1.05rem;
+}
+
+.manual-test-conditions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  margin-bottom: 12px;
+}
+
+.manual-test-conditions label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.manual-test-conditions input {
+  width: 90px;
+  min-height: 32px;
+  padding: 5px 7px;
+  border: 1px solid #899ba4;
+  border-radius: 4px;
+  text-align: right;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
+.manual-results-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.manual-results-table {
+  min-width: 860px;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+  background: #fff;
+}
+
+.manual-results-table th,
+.manual-results-table td {
+  padding: 5px 8px;
+  border: 1px solid #b8c4ca;
+  text-align: center;
+  vertical-align: middle;
+  font-variant-numeric: tabular-nums;
+}
+
+.manual-results-table thead th {
+  background: #e5eff3;
+  color: #294b58;
+}
+
+.manual-results-table tbody th {
+  white-space: pre-line;
+  background: #f5f8f9;
+}
+
+.manual-section-value {
+  min-width: 230px;
+}
+
+.manual-section-value span {
+  display: block;
+}
+
+.manual-item-name {
+  margin-bottom: 2px;
+}
+
+.manual-results-table input[type="text"] {
+  width: 90px;
+  min-height: 30px;
+  padding: 4px 6px;
+  border: 1px solid #899ba4;
+  border-radius: 3px;
+  text-align: right;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
+.manual-results-table input[type="text"]:focus {
+  border-color: #195f7c;
+  outline: 2px solid rgba(25, 95, 124, 0.18);
+}
+
+.manual-judgement {
+  font-weight: 700;
+}
+
+.manual-judgement.pass {
+  color: #21734c;
+}
+
+.manual-judgement.fail {
+  color: #b02b37;
+}
+
+.manual-judgement.unjudged {
+  color: #6b7280;
+}
+
+.manual-results-table .manual-failed-row > td {
+  background: #fff0f1;
+}
+
 .record-detail-page {
   width: 100%;
   margin: 0;

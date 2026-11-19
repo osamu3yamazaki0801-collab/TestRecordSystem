@@ -1,5 +1,6 @@
 import hmac
 import json
+import math
 import os
 import re
 import secrets
@@ -28,6 +29,10 @@ MAX_INSTRUMENT_ROWS = 50
 MAX_INSTRUMENT_CHOICES = 50
 MAX_MANAGER_CHOICES = 100
 MAX_JUMPERS = 50
+MAX_MANUAL_TESTS = 50
+MAX_MANUAL_TEST_ITEMS = 200
+MAX_SOFTWARE_SECTIONS = 20
+MAX_SOFTWARE_ROWS = 50
 DEFAULT_BOARD_DEFAULTS = [
     {"name": name, "serialNumber": ""}
     for name in (
@@ -75,6 +80,22 @@ DEFAULT_APPEARANCE_INSPECTION = {
     "boardGroups": DEFAULT_APPEARANCE_BOARD_GROUPS,
     "items": DEFAULT_APPEARANCE_ITEMS,
 }
+DEFAULT_MANUAL_TESTS = []
+DEFAULT_SOFTWARE_SECTIONS = [
+    {
+        "key": "software-install",
+        "title": "インストールソフト",
+        "rows": [{"name": "テストプロ", "sdFormat": "TEST0306"}],
+    },
+    {
+        "key": "pld-version",
+        "title": "PLDバージョン",
+        "rows": [
+            {"name": "PWM85 基板 FPGA", "sdFormat": "XPLD0885"},
+            {"name": "INF267 基板 FPGA", "sdFormat": "XPLD0856"},
+        ],
+    },
+]
 BACKBOARD_INSERTION_KEY_CONNECTORS = [
     {"name": "P31", "displayName": "P31", "positions": ["E", "F", "G", "M"]},
     {"name": "P32", "displayName": "P32", "positions": ["E", "F", "H", "L"]},
@@ -157,6 +178,139 @@ def validate_appearance_inspection(appearance):
                 "name（100文字以内）、rows（1または2）、values（設定済み基板名と100文字以内の文字列）を設定してください。"
             )
         item_keys.add(item["key"])
+
+
+def validate_manual_tests(tests):
+    def numeric_limit(value):
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str) and re.fullmatch(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)", value):
+            return float(value)
+        return None
+
+    if not isinstance(tests, list) or len(tests) > MAX_MANUAL_TESTS:
+        raise ValueError(
+            f"manualTestsは{MAX_MANUAL_TESTS}件以内の配列にしてください。"
+        )
+    test_keys = set()
+    item_keys = set()
+    item_count = 0
+    allowed_keys = {"key", "number", "name", "area", "items"}
+    item_allowed_keys = {
+        "key", "name", "lowerLimit", "upperLimit", "unit", "benchLock",
+    }
+    for test in tests:
+        if (
+            not isinstance(test, dict)
+            or set(test) != allowed_keys
+            or not isinstance(test["key"], str)
+            or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,49}", test["key"])
+            or test["key"] in test_keys
+            or not isinstance(test["number"], str)
+            or not 0 < len(test["number"]) <= 20
+            or not isinstance(test["name"], str)
+            or not 0 < len(test["name"]) <= 100
+            or test["name"] != test["name"].strip()
+            or not isinstance(test["area"], str)
+            or not 0 < len(test["area"]) <= 100
+            or test["area"] != test["area"].strip()
+            or not isinstance(test["items"], list)
+            or not test["items"]
+        ):
+            raise ValueError(
+                "manualTestsには一意なkey、number、name、areaと測定項目itemsを設定してください。"
+            )
+        test_keys.add(test["key"])
+        item_count += len(test["items"])
+        if item_count > MAX_MANUAL_TEST_ITEMS:
+            raise ValueError(
+                f"manualTestsの測定項目は合計{MAX_MANUAL_TEST_ITEMS}件以内にしてください。"
+            )
+        for item in test["items"]:
+            lower_limit = (
+                numeric_limit(item.get("lowerLimit"))
+                if isinstance(item, dict) else None
+            )
+            upper_limit = (
+                numeric_limit(item.get("upperLimit"))
+                if isinstance(item, dict) else None
+            )
+            if (
+                not isinstance(item, dict)
+                or set(item) != item_allowed_keys
+                or not isinstance(item["key"], str)
+                or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,49}", item["key"])
+                or item["key"] in item_keys
+                or not isinstance(item["name"], str)
+                or len(item["name"]) > 100
+                or item["name"] != item["name"].strip()
+                or lower_limit is None
+                or upper_limit is None
+                or not math.isfinite(lower_limit)
+                or not math.isfinite(upper_limit)
+                or lower_limit > upper_limit
+                or not isinstance(item["unit"], str)
+                or len(item["unit"]) > 20
+                or type(item["benchLock"]) is not bool
+            ):
+                raise ValueError(
+                    "manualTests.itemsには一意なkey、name、lowerLimit、upperLimit、"
+                    "unit、benchLockを設定してください。"
+                )
+            item_keys.add(item["key"])
+
+
+def validate_software_sections(sections):
+    if not isinstance(sections, list) or len(sections) > MAX_SOFTWARE_SECTIONS:
+        raise ValueError(
+            f"softwareSectionsは{MAX_SOFTWARE_SECTIONS}件以内の配列にしてください。"
+        )
+    keys = set()
+    software_rows = set()
+    row_count = 0
+    for section in sections:
+        if (
+            not isinstance(section, dict)
+            or section.keys() != {"key", "title", "rows"}
+            or not isinstance(section["key"], str)
+            or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,49}", section["key"])
+            or section["key"] in keys
+            or not isinstance(section["title"], str)
+            or not 0 < len(section["title"]) <= 100
+            or section["title"] != section["title"].strip()
+            or not isinstance(section["rows"], list)
+        ):
+            raise ValueError(
+                "softwareSectionsには一意なkey、title、rowsを設定してください。"
+            )
+        keys.add(section["key"])
+        row_count += len(section["rows"])
+        if row_count > MAX_SOFTWARE_ROWS:
+            raise ValueError(
+                f"softwareSectionsの行は合計{MAX_SOFTWARE_ROWS}件以内にしてください。"
+            )
+        for row in section["rows"]:
+            if (
+                not isinstance(row, dict)
+                or row.keys() != {"name", "sdFormat"}
+                or not isinstance(row["name"], str)
+                or not 0 < len(row["name"]) <= 100
+                or row["name"] != row["name"].strip()
+                or not isinstance(row["sdFormat"], str)
+                or not 0 < len(row["sdFormat"]) <= 100
+                or row["sdFormat"] != row["sdFormat"].strip()
+            ):
+                raise ValueError(
+                    "softwareSections.rowsにはnameとsdFormatを100文字以内で設定してください。"
+                )
+            row_identity = (row["name"], row["sdFormat"])
+            if row_identity in software_rows:
+                raise ValueError(
+                    "softwareSections.rowsのnameとsdFormatの組み合わせは重複できません。"
+                )
+            software_rows.add(row_identity)
 
 
 def load_equipment_config(config_path):
@@ -252,16 +406,25 @@ def load_equipment_config(config_path):
         jumper_names.add(jumper["name"])
     appearance = config.get("appearanceInspection", DEFAULT_APPEARANCE_INSPECTION)
     validate_appearance_inspection(appearance)
+    manual_tests = config.get("manualTests", DEFAULT_MANUAL_TESTS)
+    validate_manual_tests(manual_tests)
+    software_sections = config.get("softwareSections", DEFAULT_SOFTWARE_SECTIONS)
+    validate_software_sections(software_sections)
     return {
         "managerChoices": manager_choices,
         "instrumentChoices": choices,
         "boards": boards,
         "jumpers": jumpers,
         "appearanceInspection": appearance,
+        "manualTests": manual_tests,
+        "softwareSections": software_sections,
     }
 
 
-def empty_equipment(board_defaults=DEFAULT_BOARD_DEFAULTS):
+def empty_equipment(
+    board_defaults=DEFAULT_BOARD_DEFAULTS,
+    software_sections=DEFAULT_SOFTWARE_SECTIONS,
+):
     return {
         "boards": [dict(board) for board in board_defaults],
         "instruments": [
@@ -269,18 +432,24 @@ def empty_equipment(board_defaults=DEFAULT_BOARD_DEFAULTS):
             for _ in range(DEFAULT_INSTRUMENT_ROWS)
         ],
         "software": [
-            {"name": name, "sdFormat": sd_format, "version": "", "checksum": ""}
-            for name, sd_format in (
-                ("テストプロ", "TEST0306"),
-                ("PWM85 基板 FPGA", "XPLD0885"),
-                ("INF267 基板 FPGA", "XPLD0856"),
-            )
+            {
+                "name": row["name"],
+                "sdFormat": row["sdFormat"],
+                "version": "",
+                "checksum": "",
+            }
+            for section in software_sections
+            for row in section["rows"]
         ],
     }
 
 
-def validate_equipment(data, board_defaults=DEFAULT_BOARD_DEFAULTS):
-    template = empty_equipment(board_defaults)
+def validate_equipment(
+    data,
+    board_defaults=DEFAULT_BOARD_DEFAULTS,
+    software_sections=DEFAULT_SOFTWARE_SECTIONS,
+):
+    template = empty_equipment(board_defaults, software_sections)
     if not isinstance(data, dict) or data.keys() != template.keys():
         return "機器情報の形式が正しくありません。"
     fixed_fields = {"boards": {"name"}, "instruments": set(), "software": {"name", "sdFormat"}}
@@ -305,8 +474,17 @@ def validate_equipment(data, board_defaults=DEFAULT_BOARD_DEFAULTS):
     return None
 
 
-def normalize_equipment(data, board_defaults=DEFAULT_BOARD_DEFAULTS):
+def normalize_equipment(
+    data,
+    board_defaults=DEFAULT_BOARD_DEFAULTS,
+    software_sections=DEFAULT_SOFTWARE_SECTIONS,
+):
     instruments = list(data["instruments"])
+    saved_software = {
+        (row.get("name"), row.get("sdFormat")): row
+        for row in data.get("software", [])
+        if isinstance(row, dict)
+    }
     last_filled_row = max(
         (index + 1 for index, row in enumerate(instruments) if any(row.values())),
         default=0,
@@ -325,6 +503,20 @@ def normalize_equipment(data, board_defaults=DEFAULT_BOARD_DEFAULTS):
             for index, default in enumerate(board_defaults)
         ],
         "instruments": instruments[:row_count],
+        "software": [
+            {
+                **default,
+                "version": saved_software.get(
+                    (default["name"], default["sdFormat"]), {}
+                ).get("version", ""),
+                "checksum": saved_software.get(
+                    (default["name"], default["sdFormat"]), {}
+                ).get("checksum", ""),
+            }
+            for default in empty_equipment(
+                board_defaults, software_sections
+            )["software"]
+        ],
     }
     normalized["instruments"].extend(
         {"name": "", "managementNo": "", "testItems": ""}
@@ -385,6 +577,8 @@ def create_app(test_config=None):
     app.config["BOARD_DEFAULTS"] = equipment_config["boards"]
     app.config["JUMPERS"] = equipment_config["jumpers"]
     app.config["APPEARANCE_INSPECTION"] = equipment_config["appearanceInspection"]
+    app.config["MANUAL_TESTS"] = equipment_config["manualTests"]
+    app.config["SOFTWARE_SECTIONS"] = equipment_config["softwareSections"]
     appearance_settings = appearance_check_settings(equipment_config["appearanceInspection"]["items"])
 
     # SQLite への接続を共通化する。
@@ -460,6 +654,19 @@ def create_app(test_config=None):
                     positions TEXT NOT NULL,
                     confirmed INTEGER NOT NULL CHECK (confirmed IN (0, 1)),
                     PRIMARY KEY (record_id, connector_name)
+                );
+                CREATE TABLE IF NOT EXISTS manual_test_results (
+                    record_id INTEGER NOT NULL REFERENCES records(id) ON DELETE CASCADE,
+                    item_key TEXT NOT NULL,
+                    setting TEXT NOT NULL,
+                    measured_value TEXT NOT NULL,
+                    bench_lock INTEGER NOT NULL CHECK (bench_lock IN (0, 1)),
+                    PRIMARY KEY (record_id, item_key)
+                );
+                CREATE TABLE IF NOT EXISTS manual_test_conditions (
+                    record_id INTEGER PRIMARY KEY REFERENCES records(id) ON DELETE CASCADE,
+                    temperature TEXT NOT NULL DEFAULT '',
+                    humidity TEXT NOT NULL DEFAULT ''
                 );
                 """
             )
@@ -1046,6 +1253,81 @@ def create_app(test_config=None):
             for connector in INSERTION_KEY_CONNECTORS
         ]
 
+    def manual_test_judgement(value, item):
+        if not value.strip():
+            return ""
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return "NG"
+        if not float("-inf") < number < float("inf"):
+            return "NG"
+        lower_limit = float(item["lowerLimit"])
+        upper_limit = float(item["upperLimit"])
+        return "PASS" if lower_limit <= number <= upper_limit else "NG"
+
+    def load_manual_tests(connection, record_id):
+        saved = {
+            row["item_key"]: row
+            for row in connection.execute(
+                """
+                SELECT item_key, setting, measured_value, bench_lock
+                FROM manual_test_results WHERE record_id = ?
+                """,
+                (record_id,),
+            )
+        }
+        loaded = []
+        for test in app.config["MANUAL_TESTS"]:
+            items = []
+            for item in test["items"]:
+                setting = json.dumps(
+                    [item["name"], item["lowerLimit"], item["upperLimit"], item["unit"], item["benchLock"]],
+                    ensure_ascii=False,
+                )
+                row = saved.get(item["key"])
+                matches = row is not None and row["setting"] == setting
+                measured_value = row["measured_value"] if matches else ""
+                bench_lock = bool(row["bench_lock"]) if matches else False
+                items.append({
+                    **item,
+                    "measuredValue": measured_value,
+                    "judgement": manual_test_judgement(measured_value, item),
+                    "benchLockChecked": bench_lock,
+                })
+            loaded.append({**test, "items": items})
+        return loaded
+
+    @app.get("/api/records/<int:record_id>/manual-tests")
+    @require_login
+    def get_manual_tests(record_id):
+        with closing(connect_db()) as connection:
+            if not connection.execute(
+                "SELECT id FROM records WHERE id = ?", (record_id,)
+            ).fetchone():
+                abort(404)
+            return jsonify(load_manual_tests(connection, record_id))
+
+    @app.get("/api/records/<int:record_id>/manual-test-conditions")
+    @require_login
+    def get_manual_test_conditions(record_id):
+        with closing(connect_db()) as connection:
+            if not connection.execute(
+                "SELECT id FROM records WHERE id = ?", (record_id,)
+            ).fetchone():
+                abort(404)
+            row = connection.execute(
+                """
+                SELECT temperature, humidity
+                FROM manual_test_conditions WHERE record_id = ?
+                """,
+                (record_id,),
+            ).fetchone()
+        return jsonify(
+            temperature=row["temperature"] if row else "",
+            humidity=row["humidity"] if row else "",
+        )
+
     @app.get("/api/records/<int:record_id>/insertion-keys")
     @require_login
     def get_insertion_key_checks(record_id):
@@ -1116,10 +1398,14 @@ def create_app(test_config=None):
         data = None
         if request.method == "PUT":
             data = request.get_json(silent=True)
-            error = validate_equipment(data, app.config["BOARD_DEFAULTS"])
+            error = validate_equipment(
+                data, app.config["BOARD_DEFAULTS"], app.config["SOFTWARE_SECTIONS"]
+            )
             if error:
                 return jsonify(error=error), 400
-            data = normalize_equipment(data, app.config["BOARD_DEFAULTS"])
+            data = normalize_equipment(
+                data, app.config["BOARD_DEFAULTS"], app.config["SOFTWARE_SECTIONS"]
+            )
 
         with closing(connect_db()) as connection, connection:
             if not connection.execute(
@@ -1138,8 +1424,12 @@ def create_app(test_config=None):
             row = connection.execute(
                 "SELECT payload FROM record_equipment WHERE record_id = ?", (record_id,)
             ).fetchone()
-        data = json.loads(row["payload"]) if row else empty_equipment(app.config["BOARD_DEFAULTS"])
-        return jsonify(normalize_equipment(data, app.config["BOARD_DEFAULTS"]))
+        data = json.loads(row["payload"]) if row else empty_equipment(
+            app.config["BOARD_DEFAULTS"], app.config["SOFTWARE_SECTIONS"]
+        )
+        return jsonify(normalize_equipment(
+            data, app.config["BOARD_DEFAULTS"], app.config["SOFTWARE_SECTIONS"]
+        ))
 
     @app.get("/api/equipment-config")
     @require_login
@@ -1147,6 +1437,8 @@ def create_app(test_config=None):
         return jsonify(
             instrumentChoices=app.config["INSTRUMENT_CHOICES"],
             managerChoices=app.config["MANAGER_CHOICES"],
+            manualTests=app.config["MANUAL_TESTS"],
+            softwareSections=app.config["SOFTWARE_SECTIONS"],
         )
 
     @app.put("/api/records/<int:record_id>/details")
@@ -1167,6 +1459,8 @@ def create_app(test_config=None):
         jumper_checks = None
         appearance_checks = None
         insertion_key_checks = None
+        manual_test_results = None
+        manual_test_conditions = None
         if combined:
             try:
                 for file_name, _content_type, file_data in files:
@@ -1178,10 +1472,16 @@ def create_app(test_config=None):
                 jumper_checks = json.loads(request.form.get("jumperChecks", ""))
             except (ValueError, TypeError):
                 return jsonify(error="機器情報・ジャンパ確認の形式が正しくありません。"), 400
-            error = validate_equipment(equipment, app.config["BOARD_DEFAULTS"])
+            error = validate_equipment(
+                equipment, app.config["BOARD_DEFAULTS"],
+                app.config["SOFTWARE_SECTIONS"],
+            )
             if error:
                 return jsonify(error=error), 400
-            equipment = normalize_equipment(equipment, app.config["BOARD_DEFAULTS"])
+            equipment = normalize_equipment(
+                equipment, app.config["BOARD_DEFAULTS"],
+                app.config["SOFTWARE_SECTIONS"],
+            )
             jumper_names = {jumper["name"] for jumper in app.config["JUMPERS"]}
             if (
                 not isinstance(jumper_checks, dict)
@@ -1214,6 +1514,49 @@ def create_app(test_config=None):
                     or any(not isinstance(value, bool) for value in insertion_key_checks.values())
                 ):
                     return jsonify(error="誤挿入キー確認はすべてのコネクタの真偽値で指定してください。"), 400
+            if "manualTestResults" in request.form:
+                try:
+                    manual_test_results = json.loads(request.form["manualTestResults"])
+                except (ValueError, TypeError):
+                    return jsonify(error="手動試験結果の形式が正しくありません。"), 400
+                expected_item_keys = {
+                    item["key"]
+                    for test in app.config["MANUAL_TESTS"]
+                    for item in test["items"]
+                }
+                if (
+                    not isinstance(manual_test_results, dict)
+                    or set(manual_test_results) != expected_item_keys
+                    or any(
+                        not isinstance(result, dict)
+                        or set(result) != {"measuredValue", "benchLockChecked"}
+                        or not isinstance(result["measuredValue"], str)
+                        or len(result["measuredValue"]) > 100
+                        or type(result["benchLockChecked"]) is not bool
+                        for result in manual_test_results.values()
+                    )
+                ):
+                    return jsonify(
+                        error="手動試験結果は設定済み項目の測定値とペンキロック確認で指定してください。"
+                    ), 400
+            if "manualTestConditions" in request.form:
+                try:
+                    manual_test_conditions = json.loads(
+                        request.form["manualTestConditions"]
+                    )
+                except (ValueError, TypeError):
+                    return jsonify(error="温度・湿度の形式が正しくありません。"), 400
+                if (
+                    not isinstance(manual_test_conditions, dict)
+                    or set(manual_test_conditions) != {"temperature", "humidity"}
+                    or any(
+                        not isinstance(value, str) or len(value) > 100
+                        for value in manual_test_conditions.values()
+                    )
+                ):
+                    return jsonify(
+                        error="温度・湿度は100文字以内の文字列で指定してください。"
+                    ), 400
 
         raw_remove_ids = request.form.getlist("removeFileIds")
         try:
@@ -1334,6 +1677,52 @@ def create_app(test_config=None):
                         ],
                     )
                 insertion_keys = load_insertion_key_checks(connection, record_id)
+                if manual_test_results is not None:
+                    connection.executemany(
+                        """
+                        INSERT INTO manual_test_results (
+                            record_id, item_key, setting, measured_value, bench_lock
+                        ) VALUES (?, ?, ?, ?, ?)
+                        ON CONFLICT(record_id, item_key)
+                        DO UPDATE SET setting = excluded.setting,
+                                      measured_value = excluded.measured_value,
+                                      bench_lock = excluded.bench_lock
+                        """,
+                        [
+                            (
+                                record_id,
+                                item["key"],
+                                json.dumps(
+                                    [
+                                        item["name"], item["lowerLimit"],
+                                        item["upperLimit"], item["unit"], item["benchLock"],
+                                    ],
+                                    ensure_ascii=False,
+                                ),
+                                manual_test_results[item["key"]]["measuredValue"],
+                                int(manual_test_results[item["key"]]["benchLockChecked"]),
+                            )
+                            for test in app.config["MANUAL_TESTS"]
+                            for item in test["items"]
+                        ],
+                    )
+                manual_tests = load_manual_tests(connection, record_id)
+                if manual_test_conditions is not None:
+                    connection.execute(
+                        """
+                        INSERT INTO manual_test_conditions (
+                            record_id, temperature, humidity
+                        ) VALUES (?, ?, ?)
+                        ON CONFLICT(record_id)
+                        DO UPDATE SET temperature = excluded.temperature,
+                                      humidity = excluded.humidity
+                        """,
+                        (
+                            record_id,
+                            manual_test_conditions["temperature"],
+                            manual_test_conditions["humidity"],
+                        ),
+                    )
                 saved_files = [
                     {"id": row["id"], "fileName": row["file_name"]}
                     for row in connection.execute(
@@ -1362,7 +1751,11 @@ def create_app(test_config=None):
             return jsonify(
                 success=True, record=updated_record, equipment=equipment,
                 jumperChecks=jumper_checks, appearanceChecks=appearance_checks,
-                insertionKeys=insertion_keys,
+                insertionKeys=insertion_keys, manualTests=manual_tests,
+                manualTestConditions=manual_test_conditions or {
+                    "temperature": "",
+                    "humidity": "",
+                },
             )
         return jsonify(success=True)
 

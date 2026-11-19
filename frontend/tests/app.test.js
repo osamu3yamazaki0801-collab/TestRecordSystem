@@ -473,6 +473,26 @@ test('opening a CSV record selects the trial results tab and renders imported da
     if (pathname === '/api/records/17/equipment') return response(equipment);
     if (pathname === '/api/records/17/appearance-checks') return response(appearanceInspection());
     if (pathname === '/api/records/17/insertion-keys') return response(insertionKeys());
+    if (pathname === '/api/records/17/manual-tests') return response([{
+      key: 'power',
+      number: '1',
+      name: '電源確認',
+      area: 'PWS132',
+      items: [{
+        key: 'voltage',
+        name: 'P24A1(P24-P24)',
+        lowerLimit: 23.52,
+        upperLimit: 24.48,
+        unit: 'V',
+        benchLock: true,
+        measuredValue: '24.00',
+        judgement: 'PASS',
+        benchLockChecked: false,
+      }],
+    }]);
+    if (pathname === '/api/records/17/manual-test-conditions') {
+      return response({ temperature: '23', humidity: '45' });
+    }
     if (pathname === '/api/records/17/jumpers') {
       return response(jumpers);
     }
@@ -495,6 +515,23 @@ test('opening a CSV record selects the trial results tab and renders imported da
         .map((tab) => tab.textContent),
       ['アナログ系', 'デジタル系'],
     );
+    const manualTable = app.dom.window.document.querySelector('.manual-results-table');
+    assert.equal(app.dom.window.document.querySelector('input[aria-label="温度"]').value, '23');
+    assert.equal(app.dom.window.document.querySelector('input[aria-label="湿度"]').value, '45');
+    assert.equal(manualTable.previousElementSibling, null);
+    assert.equal(manualTable.querySelector('.manual-judgement').textContent, 'PASS');
+    const measuredInput = manualTable.querySelector('input[type="text"]');
+    await act(async () => {
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        app.dom.window.HTMLInputElement.prototype,
+        'value',
+      ).set;
+      valueSetter.call(measuredInput, '25');
+      measuredInput.dispatchEvent(new app.dom.window.Event('input', { bubbles: true }));
+    });
+    assert.equal(manualTable.querySelector('.manual-judgement').textContent, 'NG');
+    assert.ok(manualTable.querySelector('tr').classList.contains('manual-failed-row')
+      || manualTable.querySelector('tbody tr').classList.contains('manual-failed-row'));
     assert.ok(app.dom.window.document.body.textContent.includes('Parsed product'));
     const ngJudgement = [...app.dom.window.document.querySelectorAll('.csv-judgement')]
       .find((element) => element.textContent === 'NG');
@@ -657,6 +694,8 @@ test('power board PDF reports upload and preview at the end of the pre-test chec
     if (parsedUrl.pathname === '/api/records/18/equipment') return response(equipment);
     if (parsedUrl.pathname === '/api/records/18/appearance-checks') return response(appearanceInspection());
     if (parsedUrl.pathname === '/api/records/18/insertion-keys') return response(insertionKeys());
+    if (parsedUrl.pathname === '/api/records/18/manual-tests') return response([]);
+    if (parsedUrl.pathname === '/api/records/18/manual-test-conditions') return response({ temperature: '', humidity: '' });
     if (parsedUrl.pathname === '/api/records/18/jumpers') return response(jumpers);
     if (parsedUrl.pathname === '/api/equipment-config') return response({ managerChoices: ['山田太郎'], instrumentChoices: [] });
     if (parsedUrl.pathname === '/api/records/18/power-board-report' && method === 'POST') {
@@ -744,6 +783,8 @@ test('appearance inspection checks cancel, save and retain input on failure with
     if (pathname === '/api/records/19/insertion-keys') {
       return response(insertionKeys().map((item) => ({ ...item, confirmed: ['P34', 'board:P32'].includes(item.name) })));
     }
+    if (pathname === '/api/records/19/manual-tests') return response([]);
+    if (pathname === '/api/records/19/manual-test-conditions') return response({ temperature: '', humidity: '' });
     if (pathname === '/api/equipment-config') return response({ managerChoices: ['山田太郎'], instrumentChoices: [] });
     if (pathname === '/api/records/19/details' && options.method === 'PUT') {
       saves.push(options.body);
@@ -755,6 +796,8 @@ test('appearance inspection checks cancel, save and retain input on failure with
         insertionKeys: insertionKeys().map((item) => ({
           ...item, confirmed: JSON.parse(options.body.get('insertionKeyChecks'))[item.name],
         })),
+        manualTests: [],
+        manualTestConditions: JSON.parse(options.body.get('manualTestConditions')),
       });
     }
     return response({ error: `Unexpected request: ${pathname}` }, 404);

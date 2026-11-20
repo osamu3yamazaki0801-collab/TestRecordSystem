@@ -441,6 +441,8 @@ def empty_equipment(
             for section in software_sections
             for row in section["rows"]
         ],
+        "shippingSoftware": [{"name": "", "sdFormat": "", "version": "", "checksum": ""}],
+        "shippingSoftwareSameAsTrial": False,
     }
 
 
@@ -452,8 +454,15 @@ def validate_equipment(
     template = empty_equipment(board_defaults, software_sections)
     if not isinstance(data, dict) or data.keys() != template.keys():
         return "機器情報の形式が正しくありません。"
-    fixed_fields = {"boards": {"name"}, "instruments": set(), "software": {"name", "sdFormat"}}
+    fixed_fields = {
+        "boards": {"name"}, "instruments": set(),
+        "software": {"name", "sdFormat"}, "shippingSoftware": set(),
+    }
     for group, expected_rows in template.items():
+        if group == "shippingSoftwareSameAsTrial":
+            if not isinstance(data[group], bool):
+                return "「試験時と同じソフト」はチェック状態で指定してください。"
+            continue
         rows = data[group]
         if group == "boards":
             if not isinstance(rows, list) or len(rows) != len(expected_rows):
@@ -480,18 +489,12 @@ def normalize_equipment(
     software_sections=DEFAULT_SOFTWARE_SECTIONS,
 ):
     instruments = list(data["instruments"])
-    saved_software = {
-        (row.get("name"), row.get("sdFormat")): row
-        for row in data.get("software", [])
-        if isinstance(row, dict)
-    }
     last_filled_row = max(
         (index + 1 for index, row in enumerate(instruments) if any(row.values())),
         default=0,
     )
     row_count = max(DEFAULT_INSTRUMENT_ROWS, last_filled_row)
     normalized = {
-        **data,
         "boards": [
             {
                 "serialNumber": (
@@ -503,21 +506,31 @@ def normalize_equipment(
             for index, default in enumerate(board_defaults)
         ],
         "instruments": instruments[:row_count],
-        "software": [
-            {
-                **default,
-                "version": saved_software.get(
-                    (default["name"], default["sdFormat"]), {}
-                ).get("version", ""),
-                "checksum": saved_software.get(
-                    (default["name"], default["sdFormat"]), {}
-                ).get("checksum", ""),
-            }
-            for default in empty_equipment(
-                board_defaults, software_sections
-            )["software"]
-        ],
+        "shippingSoftwareSameAsTrial": data.get("shippingSoftwareSameAsTrial", False),
     }
+    template = empty_equipment(board_defaults, software_sections)
+    saved_software = {
+        (row.get("name"), row.get("sdFormat")): row
+        for row in data.get("software", [])
+        if isinstance(row, dict)
+    }
+    normalized["software"] = [
+        {
+            **default,
+            "version": saved_software.get(
+                (default["name"], default["sdFormat"]), {}
+            ).get("version", ""),
+            "checksum": saved_software.get(
+                (default["name"], default["sdFormat"]), {}
+            ).get("checksum", ""),
+        }
+        for default in template["software"]
+    ]
+    saved_shipping = data["shippingSoftware"][0] if data.get("shippingSoftware") else {}
+    normalized["shippingSoftware"] = [{
+        field: saved_shipping.get(field, default)
+        for field, default in template["shippingSoftware"][0].items()
+    }]
     normalized["instruments"].extend(
         {"name": "", "managementNo": "", "testItems": ""}
         for _ in range(row_count - len(normalized["instruments"]))
@@ -1399,12 +1412,12 @@ def create_app(test_config=None):
         if request.method == "PUT":
             data = request.get_json(silent=True)
             error = validate_equipment(
-                data, app.config["BOARD_DEFAULTS"], app.config["SOFTWARE_SECTIONS"]
+                data, app.config["BOARD_DEFAULTS"], app.config["SOFTWARE_SECTIONS"],
             )
             if error:
                 return jsonify(error=error), 400
             data = normalize_equipment(
-                data, app.config["BOARD_DEFAULTS"], app.config["SOFTWARE_SECTIONS"]
+                data, app.config["BOARD_DEFAULTS"], app.config["SOFTWARE_SECTIONS"],
             )
 
         with closing(connect_db()) as connection, connection:
@@ -1425,10 +1438,10 @@ def create_app(test_config=None):
                 "SELECT payload FROM record_equipment WHERE record_id = ?", (record_id,)
             ).fetchone()
         data = json.loads(row["payload"]) if row else empty_equipment(
-            app.config["BOARD_DEFAULTS"], app.config["SOFTWARE_SECTIONS"]
+            app.config["BOARD_DEFAULTS"], app.config["SOFTWARE_SECTIONS"],
         )
         return jsonify(normalize_equipment(
-            data, app.config["BOARD_DEFAULTS"], app.config["SOFTWARE_SECTIONS"]
+            data, app.config["BOARD_DEFAULTS"], app.config["SOFTWARE_SECTIONS"],
         ))
 
     @app.get("/api/equipment-config")

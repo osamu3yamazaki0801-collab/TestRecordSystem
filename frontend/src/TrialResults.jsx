@@ -187,6 +187,13 @@ export default function TrialResults({ recordId, files, pendingFiles, csrfToken,
             {sources.map((item) => <option key={item.key} value={item.key}>{item.name}{item.pending ? '（未保存）' : ''}</option>)}
           </select>
         </label>
+        {!pending && (
+          <a
+            className="secondary-button csv-file-download"
+            href={`/api/records/${recordId}/files/${source.file.id}`}
+            download={source.name}
+          >ダウンロード</a>
+        )}
         {files.length > 0 && (
           <button type="button" className="delete-button csv-file-delete" disabled={fileActionPending} onClick={onDeleteFile}>
             {fileActionPending ? '削除中...' : '削除する'}

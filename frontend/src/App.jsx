@@ -622,7 +622,7 @@ function App() {
         setRegisterMessage({ text: '詳細情報の読み込みが完了していません。', type: 'error' });
         return;
       }
-      if (Object.values(detailEquipment).some((rows) => rows.some((row) => (
+      if (['boards', 'instruments', 'software', 'shippingSoftware'].some((group) => detailEquipment[group].some((row) => (
         Object.values(row).some((value) => typeof value !== 'string' || value.length > 100)
       )))) {
         setRegisterMessage({ text: '機器情報の各項目は100文字以内で入力してください。', type: 'error' });
@@ -1236,6 +1236,7 @@ function RecordDetails({ record, onClose, recordDirty, registering, registration
     '試験情報',
     '受入検査',
     '試験結果',
+    '出荷検査',
   ];
 
   function getMaxCommonPanelWidth(divider) {
@@ -1591,6 +1592,9 @@ function RecordDetails({ record, onClose, recordDirty, registering, registration
               {fileActionMessage.text && <Message type={fileActionMessage.type}>{fileActionMessage.text}</Message>}
             </>
           )}
+          {index === 3 && (
+            <EquipmentForm equipment={equipment} setEquipment={setEquipment} disabled={registering} onDirty={onDirty} groupKeys={['shippingSoftware']} />
+          )}
         </div>
       ))}
       </div>
@@ -1941,6 +1945,15 @@ const EQUIPMENT_SECTIONS = [
       { key: 'testItems', label: '試験項目' },
     ],
   },
+  {
+    key: 'shippingSoftware', title: '出荷用ソフトインストール',
+    columns: [
+      { key: 'name', label: 'ソフト' },
+      { key: 'sdFormat', label: 'SD 形式' },
+      { key: 'version', label: 'バージョン' },
+      { key: 'checksum', label: 'チェックサム' },
+    ],
+  },
 ];
 
 function EquipmentForm({ equipment, instrumentChoices = [], softwareSections = [], setEquipment, disabled, onDirty, groupKeys }) {
@@ -1997,6 +2010,25 @@ function EquipmentForm({ equipment, instrumentChoices = [], softwareSections = [
         {[...EQUIPMENT_SECTIONS.filter((group) => groupKeys.includes(group.key)), ...softwareGroups].map((group) => (
           <section key={group.sectionId || group.key} aria-labelledby={`equipment-${group.sectionId || group.key}-heading`}>
             <h3 id={`equipment-${group.sectionId || group.key}-heading`} className="jumper-heading">{group.title}</h3>
+            {group.key === 'shippingSoftware' && (
+              <>
+                <label className="shipping-software-lock">
+                  <input
+                    type="checkbox"
+                    checked={equipment.shippingSoftwareSameAsTrial}
+                    onChange={(event) => {
+                      const checked = event.target.checked;
+                      setEquipment((current) => ({ ...current, shippingSoftwareSameAsTrial: checked }));
+                      onDirty();
+                    }}
+                  />
+                  試験時と同じソフト
+                </label>
+                {equipment.shippingSoftwareSameAsTrial && (
+                  <p className="field-help" role="status">入力欄は編集できません。チェックを外すと編集できます。</p>
+                )}
+              </>
+            )}
             <div className="equipment-table-wrap">
               <table className={`equipment-table equipment-table--${group.key} equipment-table--${group.sectionId || group.key}`} aria-label={group.title}>
                 <thead><tr>{group.columns.map((column) => <th key={column.key} scope="col">{column.label}</th>)}</tr></thead>
@@ -2019,9 +2051,10 @@ function EquipmentForm({ equipment, instrumentChoices = [], softwareSections = [
                             ) : (
                               <input
                                 type="text"
-                                aria-label={`${group.key === 'instruments' ? `使用計測器 ${rowIndex + 1}行目` : row.name} ${column.label}`}
+                                aria-label={`${group.key === 'instruments' ? `使用計測器 ${rowIndex + 1}行目` : group.key === 'shippingSoftware' ? group.title : row.name} ${column.label}`}
                                 value={row[column.key]}
                                 maxLength={100}
+                                disabled={group.key === 'shippingSoftware' && equipment.shippingSoftwareSameAsTrial}
                                 onChange={(event) => changeField(group.key, rowIndex, column.key, event.target.value)}
                               />
                             )}

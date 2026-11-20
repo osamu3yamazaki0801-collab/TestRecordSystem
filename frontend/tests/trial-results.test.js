@@ -41,3 +41,10 @@ test('saved CSV files render a loading state before parsing completes', () => {
   const output = renderResults({ files: [{ id: 1, fileName: 'result.csv' }] });
   assert.ok(output.includes('CSVを読み込み中...'));
 });
+
+test('saved CSV files include a download link to the authenticated file endpoint', () => {
+  const output = renderResults({ recordId: 17, files: [{ id: 42, fileName: 'result.csv' }] });
+  assert.ok(output.includes('href="/api/records/17/files/42"'));
+  assert.ok(output.includes('download="result.csv"'));
+  assert.ok(output.includes('>ダウンロード</a>'));
+});

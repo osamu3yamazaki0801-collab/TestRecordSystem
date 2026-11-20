@@ -602,6 +602,14 @@ class LedgerAppTests(unittest.TestCase):
         equipment["boards"][0]["serialNumber"] = "251100020A"
         equipment["instruments"][0] = {"name": "オシロスコープ", "managementNo": "AA00432", "testItems": "B9, B10"}
         equipment["software"][0].update(version="9055", checksum="CB2FA46")
+        self.assertEqual(equipment["shippingSoftware"], [
+            {"name": "", "sdFormat": "", "version": "", "checksum": ""},
+        ])
+        self.assertIs(equipment["shippingSoftwareSameAsTrial"], False)
+        equipment["shippingSoftwareSameAsTrial"] = True
+        equipment["shippingSoftware"][0].update(
+            name="出荷アプリ", sdFormat="SHIP001", version="SHIP-1", checksum="123ABC",
+        )
         response = self.client.put(url, json=equipment, headers={"X-CSRF-Token": self.csrf_token})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json, equipment)
@@ -609,10 +617,24 @@ class LedgerAppTests(unittest.TestCase):
         with restarted.session_transaction() as session:
             session["username"] = "operator"
         self.assertEqual(restarted.get(url).json, equipment)
+        self.assertIs(
+            self.client.get(f"/api/records/{record_ids[1]}/equipment").json["shippingSoftwareSameAsTrial"],
+            False,
+        )
+        self.assertEqual(
+            self.client.get(f"/api/records/{record_ids[1]}/equipment").json["shippingSoftware"],
+            [{"name": "", "sdFormat": "", "version": "", "checksum": ""}],
+        )
+        equipment["shippingSoftware"][0] = {
+            "name": "", "sdFormat": "", "version": "", "checksum": "",
+        }
+        equipment["shippingSoftwareSameAsTrial"] = False
         self.assertEqual(self.client.get(f"/api/records/{record_ids[1]}/equipment").json["boards"][0]["serialNumber"], "")
         equipment["boards"][0]["serialNumber"] = ""
         self.assertEqual(self.client.put(url, json=equipment, headers={"X-CSRF-Token": self.csrf_token}).status_code, 200)
         self.assertEqual(self.client.get(url).json["boards"][0]["serialNumber"], "")
+        self.assertEqual(self.client.get(url).json["shippingSoftware"], equipment["shippingSoftware"])
+        self.assertIs(self.client.get(url).json["shippingSoftwareSameAsTrial"], False)
         self.client.delete(f"/api/records/{record_ids[0]}", headers={"X-CSRF-Token": self.csrf_token})
         with closing(sqlite3.connect(self.app.config["DATABASE_PATH"])) as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM record_equipment").fetchone()[0], 0)
@@ -625,6 +647,9 @@ class LedgerAppTests(unittest.TestCase):
         ).json["id"]
         url = f"/api/records/{record_id}/equipment"
         legacy = self.client.get(url).json
+        del legacy["shippingSoftware"]
+        del legacy["shippingSoftwareSameAsTrial"]
+        legacy["software"][0]["version"] = "LEGACY"
         legacy["instruments"] = [
             {"name": "計測器", "managementNo": "管理番号", "testItems": "試験項目"}
             for _ in range(3)
@@ -641,6 +666,12 @@ class LedgerAppTests(unittest.TestCase):
             connection.commit()
 
         expanded = self.client.get(url).json
+        self.assertIs(expanded["shippingSoftwareSameAsTrial"], False)
+        self.assertEqual(expanded["software"][0]["version"], "LEGACY")
+        self.assertTrue(all(
+            row["version"] == row["checksum"] == ""
+            for row in expanded["shippingSoftware"]
+        ))
         self.assertEqual(expanded["instruments"][:3], legacy["instruments"])
         self.assertEqual(expanded["boards"], legacy["boards"])
         self.assertEqual(expanded["instruments"][3:], [
@@ -648,10 +679,54 @@ class LedgerAppTests(unittest.TestCase):
         ])
 
         response = self.client.put(
-            url, json=legacy, headers={"X-CSRF-Token": self.csrf_token},
+            url, json={
+                **legacy, "shippingSoftware": expanded["shippingSoftware"],
+                "shippingSoftwareSameAsTrial": expanded["shippingSoftwareSameAsTrial"],
+            },
+            headers={"X-CSRF-Token": self.csrf_token},
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json, expanded)
+
+    def test_shipping_software_preserves_legacy_values_when_name_and_format_change(self):
+        self.login()
+        record_id = self.client.post(
+            "/api/records", data=self.record_data(),
+            headers={"X-CSRF-Token": self.csrf_token},
+        ).json["id"]
+        url = f"/api/records/{record_id}/equipment"
+        legacy = self.client.get(url).json
+        legacy["shippingSoftwareCopiedFromAcceptance"] = True
+        legacy["softwareSameAsShipping"] = False
+        legacy["shippingSoftware"] = [
+            {
+                "name": "アプリソフト", "sdFormat": "TEST0306",
+                "configName": "出荷ソフト", "configSdFormat": "TEST0306",
+                "version": "1.2", "checksum": "ABC",
+            },
+            {"name": "PWM85 基板 FPGA", "sdFormat": "XPLD0921", "version": "PLD1", "checksum": "DEF"},
+            {"name": "INF267 基板 FPGA", "sdFormat": "XPLD0856", "version": "PLD2", "checksum": "123"},
+        ]
+        with closing(sqlite3.connect(self.app.config["DATABASE_PATH"])) as connection:
+            connection.execute(
+                "INSERT INTO record_equipment (record_id, payload) VALUES (?, ?)",
+                (record_id, json.dumps(legacy)),
+            )
+            connection.commit()
+
+        loaded = self.client.get(url).json
+        self.assertEqual(set(loaded), {
+            "boards", "instruments", "software", "shippingSoftware", "shippingSoftwareSameAsTrial",
+        })
+        self.assertEqual(loaded["shippingSoftware"], [{
+            "name": "アプリソフト", "sdFormat": "TEST0306", "version": "1.2", "checksum": "ABC",
+        }])
+        loaded["shippingSoftware"][0].update(name="新しい出荷ソフト", sdFormat="NEW001")
+        saved = self.client.put(url, json=loaded, headers={"X-CSRF-Token": self.csrf_token})
+        self.assertEqual(saved.status_code, 200)
+        self.assertEqual(self.client.get(url).json, loaded)
+        self.assertEqual(loaded["shippingSoftware"][0]["version"], "1.2")
+        self.assertEqual(loaded["shippingSoftware"][0]["checksum"], "ABC")
 
     def test_equipment_omits_removed_board_fields_from_stored_records(self):
         self.login()
@@ -805,6 +880,10 @@ class LedgerAppTests(unittest.TestCase):
             json.dumps({
                 "jumpers": self.app.config["JUMPERS"],
                 "softwareSections": software_sections,
+                "shippingSoftwareSections": [{
+                    "key": "legacy-shipping", "title": "旧設定",
+                    "rows": [{"name": "旧ソフト", "sdFormat": "OLD001"}],
+                }],
             }),
             encoding="utf-8",
         )
@@ -830,6 +909,12 @@ class LedgerAppTests(unittest.TestCase):
         ])
         equipment["software"][0]["version"] = "1.2.3"
         equipment["software"][0]["checksum"] = "ABC123"
+        self.assertEqual(equipment["shippingSoftware"], [{
+            "name": "", "sdFormat": "", "version": "", "checksum": "",
+        }])
+        equipment["shippingSoftware"][0].update(
+            name="出荷ソフト", sdFormat="USER001", version="2.0", checksum="DEF456",
+        )
         csrf = configured_client.get("/api/session").json["csrfToken"]
         response = configured_client.put(
             url,
@@ -845,6 +930,8 @@ class LedgerAppTests(unittest.TestCase):
             configured_client.get("/api/equipment-config").json["softwareSections"],
             software_sections,
         )
+        self.assertNotIn("shippingSoftwareSections", configured_client.get("/api/equipment-config").json)
+        self.assertEqual(configured_client.get(url).json, equipment)
 
     def test_manual_tests_are_configured_judged_and_saved(self):
         self.login()
@@ -1106,12 +1193,19 @@ class LedgerAppTests(unittest.TestCase):
         url = f"/api/records/{record_id}/equipment"
         initial = self.client.get(url).json
         self.assertEqual(self.client.put(url, json=initial).status_code, 400)
-        invalid_payloads = [{}, [], {**initial, "boards": []}]
+        invalid_payloads = [
+            {}, [], {**initial, "boards": []},
+            *({**initial, "shippingSoftwareSameAsTrial": value} for value in (None, 0, 1, "true", [], {})),
+        ]
         for group, field, value in (
             ("boards", "name", "OTHER"), ("boards", "serialNumber", 123),
             ("boards", "revision", "ABC123"), ("boards", "nega", "A-1"),
             ("instruments", "name", "a" * 101), ("software", "sdFormat", "OTHER"),
             ("software", "name", "OTHER"), ("software", "version", None),
+            ("shippingSoftware", "name", "a" * 101),
+            ("shippingSoftware", "sdFormat", 123),
+            ("shippingSoftware", "version", "a" * 101),
+            ("shippingSoftware", "checksum", None),
         ):
             payload = self.client.get(url).json
             payload[group][0][field] = value
@@ -1140,6 +1234,10 @@ class LedgerAppTests(unittest.TestCase):
         equipment["boards"][0]["serialNumber"] = "SERIAL-001"
         equipment["instruments"][0]["name"] = "オシロスコープ"
         equipment["software"][0]["version"] = "1.2"
+        equipment["shippingSoftware"][0].update(
+            name="出荷ソフト", sdFormat="USER001", version="SHIP-2", checksum="ABC123",
+        )
+        equipment["shippingSoftwareSameAsTrial"] = True
         appearance_url = f"/api/records/{record_id}/appearance-checks"
         appearance = self.client.get(appearance_url).json
         self.assertTrue(all(value is False for value in appearance["checks"].values()))

@@ -24,6 +24,10 @@ function response(data, status = 200) {
   };
 }
 
+function shippingSoftware() {
+  return [{ name: '', sdFormat: '', version: '', checksum: '' }];
+}
+
 function appearanceInspection() {
   const items = [
     { key: 'boardRevision', name: '基板レビジョン', rows: 2, values: { PWS132: 'A', PWM85: 'A4', INF265: 'B0', MDM57: 'A2', INF271: 'D0', INF267: 'B0' } },
@@ -394,6 +398,8 @@ test('opening a CSV record selects the trial results tab and renders imported da
   const equipment = {
     boards: [{ name: 'PWS132-A', serialNumber: '' }],
     instruments: [{ name: '', managementNo: '', testItems: '' }],
+    shippingSoftware: shippingSoftware(),
+    shippingSoftwareSameAsTrial: false,
     software: [
       { name: 'テストプロ', sdFormat: 'TEST0306', version: '', checksum: '' },
       { name: 'PWM85 基板 FPGA', sdFormat: 'XPLD0885', version: '', checksum: '' },
@@ -678,6 +684,8 @@ test('power board PDF reports upload and preview at the end of the pre-test chec
   const equipment = {
     boards: [{ name: 'PWS132-A', serialNumber: '' }],
     instruments: [],
+    shippingSoftware: shippingSoftware(),
+    shippingSoftwareSameAsTrial: false,
     software: [
       { name: 'テストプロ', sdFormat: 'TEST0306', version: '', checksum: '' },
       { name: 'PWM85 基板 FPGA', sdFormat: 'XPLD0885', version: '', checksum: '' },
@@ -747,6 +755,128 @@ test('power board PDF reports upload and preview at the end of the pre-test chec
   }
 });
 
+test('shipping inspection has independent software fields with shared save and cancel', async () => {
+  const record = {
+    id: 20, trialNo: 'T-020', projectName: '案件', productNo: 'A20',
+    registrationDate: '20261114', manager: '山田太郎', files: [],
+  };
+  let equipment = {
+    boards: [], instruments: [],
+    software: [
+      { name: 'テストプロ', sdFormat: 'TEST0306', version: 'ACCEPT-1', checksum: '' },
+      { name: 'PWM85 基板 FPGA', sdFormat: 'XPLD0885', version: 'ACCEPT-PLD', checksum: '' },
+      { name: 'INF267 基板 FPGA', sdFormat: 'XPLD0856', version: '', checksum: '' },
+    ],
+    shippingSoftware: shippingSoftware(),
+    shippingSoftwareSameAsTrial: false,
+  };
+  const appearance = appearanceInspection();
+  const saves = [];
+  let failSave = true;
+  const fetchMock = async (url, options = {}) => {
+    const { pathname } = new URL(url, 'http://localhost');
+    if (pathname === '/api/session') return response({ authenticated: true, username: 'operator', csrfToken: 'test-token' });
+    if (pathname === '/api/records') return response([record]);
+    if (pathname === '/api/equipment-config') return response({ managerChoices: ['山田太郎'], instrumentChoices: [] });
+    if (pathname === '/api/records/20/equipment') return response(equipment);
+    if (pathname === '/api/records/20/jumpers') return response([]);
+    if (pathname === '/api/records/20/appearance-checks') return response(appearance);
+    if (pathname === '/api/records/20/insertion-keys') return response(insertionKeys());
+    if (pathname === '/api/records/20/manual-tests') return response([]);
+    if (pathname === '/api/records/20/manual-test-conditions') return response({ temperature: '', humidity: '' });
+    if (pathname === '/api/records/20/details' && options.method === 'PUT') {
+      saves.push(options.body);
+      if (failSave) return response({ error: '保存に失敗しました。' }, 500);
+      equipment = JSON.parse(options.body.get('equipment'));
+      return response({
+        record, equipment, jumperChecks: {},
+        appearanceChecks: appearance.checks, insertionKeys: insertionKeys(),
+        manualTests: [], manualTestConditions: { temperature: '', humidity: '' },
+      });
+    }
+    return response({ error: `Unexpected request: ${pathname}` }, 404);
+  };
+  const app = await mountApp('http://localhost/?recordId=20', fetchMock);
+  try {
+    const document = app.dom.window.document;
+    await waitFor(() => document.querySelector('.record-detail-tabs'), 'detail tabs were not rendered');
+    const tabs = [...document.querySelectorAll('.record-detail-tabs [role="tab"]')];
+    assert.deepEqual(tabs.map((tab) => tab.textContent), ['試験情報', '受入検査', '試験結果', '出荷検査']);
+    await act(async () => tabs[0].dispatchEvent(new app.dom.window.KeyboardEvent('keydown', { key: 'End', bubbles: true })));
+    assert.equal(tabs[3].getAttribute('aria-selected'), 'true');
+    assert.equal(document.activeElement, tabs[3]);
+    const panel = document.getElementById('record-detail-panel-3');
+    assert.equal(panel.hidden, false);
+    assert.deepEqual([...panel.querySelectorAll('h3')].map((heading) => heading.textContent),
+      ['出荷用ソフトインストール']);
+    assert.equal(panel.querySelectorAll('tbody tr').length, 1);
+    const inputs = [...panel.querySelectorAll('tbody input')];
+    assert.equal(inputs.length, 4);
+    assert.ok(inputs.every((input) => input.value === '' && input.maxLength === 100));
+    const name = panel.querySelector('input[aria-label="出荷用ソフトインストール ソフト"]');
+    const sdFormat = panel.querySelector('input[aria-label="出荷用ソフトインストール SD 形式"]');
+    const version = panel.querySelector('input[aria-label="出荷用ソフトインストール バージョン"]');
+    const checksum = panel.querySelector('input[aria-label="出荷用ソフトインストール チェックサム"]');
+    await enterText(app.dom, name, '出荷アプリ');
+    await enterText(app.dom, sdFormat, 'SHIP001');
+    await enterText(app.dom, version, 'SHIP-1');
+    await enterText(app.dom, checksum, 'ABC123');
+    const sameSoftware = panel.querySelector('input[type="checkbox"]');
+    assert.equal(sameSoftware.checked, false);
+    await click(app.dom, sameSoftware);
+    assert.equal(sameSoftware.checked, true);
+    assert.ok(inputs.every((input) => input.disabled));
+    assert.deepEqual(inputs.map((input) => input.value), ['出荷アプリ', 'SHIP001', 'SHIP-1', 'ABC123']);
+    assert.ok(panel.textContent.includes('チェックを外すと編集できます。'));
+    await click(app.dom, tabs[1]);
+    assert.equal(document.querySelector('input[aria-label="テストプロ バージョン"]').value, 'ACCEPT-1');
+    assert.equal(document.querySelector('input[aria-label="PWM85 基板 FPGA バージョン"]').value, 'ACCEPT-PLD');
+    await click(app.dom, tabs[3]);
+    const commonButtons = [...document.querySelectorAll('.record-detail-common button')];
+    const saveButton = commonButtons.find((button) => button.textContent === '保存');
+    const cancelButton = commonButtons.find((button) => button.textContent === 'キャンセル');
+    let beforeUnload = new app.dom.window.Event('beforeunload', { cancelable: true });
+    await act(async () => app.dom.window.dispatchEvent(beforeUnload));
+    assert.equal(beforeUnload.defaultPrevented, true, 'unsaved changes should warn before closing');
+    assert.equal(saveButton.disabled, false, 'cancelling close must leave save enabled');
+    assert.deepEqual(inputs.map((input) => input.value), ['出荷アプリ', 'SHIP001', 'SHIP-1', 'ABC123']);
+    await click(app.dom, saveButton);
+    assert.ok(document.body.textContent.includes('保存に失敗しました。'));
+    assert.equal(sameSoftware.checked, true);
+    assert.ok(inputs.every((input) => input.disabled));
+    assert.deepEqual(inputs.map((input) => input.value), ['出荷アプリ', 'SHIP001', 'SHIP-1', 'ABC123']);
+    failSave = false;
+    await click(app.dom, saveButton);
+    assert.equal(saves.length, 2);
+    const saved = JSON.parse(saves[1].get('equipment'));
+    assert.equal(saved.shippingSoftwareSameAsTrial, true);
+    assert.deepEqual(saved.shippingSoftware, [{
+      name: '出荷アプリ', sdFormat: 'SHIP001', version: 'SHIP-1', checksum: 'ABC123',
+    }]);
+    assert.equal(saved.software[0].version, 'ACCEPT-1');
+    assert.equal(saved.software[1].version, 'ACCEPT-PLD');
+    beforeUnload = new app.dom.window.Event('beforeunload', { cancelable: true });
+    await act(async () => app.dom.window.dispatchEvent(beforeUnload));
+    assert.equal(beforeUnload.defaultPrevented, false, 'successful save should clear the close warning');
+    await click(app.dom, sameSoftware);
+    assert.ok(inputs.every((input) => !input.disabled));
+    for (const input of inputs) await enterText(app.dom, input, 'UNSAVED');
+    app.dom.window.confirm = () => true;
+    await click(app.dom, cancelButton);
+    assert.equal(sameSoftware.checked, true, 'cancel should restore the saved check state');
+    assert.ok(inputs.every((input) => input.disabled));
+    assert.deepEqual(inputs.map((input) => input.value), ['出荷アプリ', 'SHIP001', 'SHIP-1', 'ABC123']);
+    await click(app.dom, sameSoftware);
+    await click(app.dom, saveButton);
+    assert.equal(saves.length, 3);
+    assert.equal(JSON.parse(saves[2].get('equipment')).shippingSoftwareSameAsTrial, false);
+    assert.ok(inputs.every((input) => !input.disabled));
+    assert.deepEqual(inputs.map((input) => input.value), ['出荷アプリ', 'SHIP001', 'SHIP-1', 'ABC123']);
+  } finally {
+    await app.cleanup();
+  }
+});
+
 test('appearance inspection checks cancel, save and retain input on failure with other details', async () => {
   const record = {
     id: 19, trialNo: 'T-019', projectName: '案件', productNo: 'A 19',
@@ -755,6 +885,8 @@ test('appearance inspection checks cancel, save and retain input on failure with
   const equipment = {
     boards: [{ name: 'PWS132', serialNumber: '' }],
     instruments: [],
+    shippingSoftware: shippingSoftware(),
+    shippingSoftwareSameAsTrial: false,
     software: [
       { name: 'テストプロ', sdFormat: 'TEST0306', version: '', checksum: '' },
       { name: 'PWM85 基板 FPGA', sdFormat: 'XPLD0885', version: '', checksum: '' },

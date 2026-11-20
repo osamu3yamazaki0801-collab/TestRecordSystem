@@ -1196,6 +1196,11 @@ tbody tr:last-child td {
   margin-bottom: 16px;
 }
 
+.csv-file-download {
+  margin-bottom: 16px;
+  text-decoration: none;
+}
+
 .trial-results-panel select {
   width: 100%;
   min-width: 0;
@@ -1251,7 +1256,7 @@ tbody tr:last-child td {
 
 .record-detail-tabs {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
   margin-top: 0;
   padding: 12px 0;
@@ -1973,7 +1978,8 @@ tbody tr:last-child td {
 }
 
 .equipment-table-wrap:has(> .equipment-table--software-install),
-.equipment-table-wrap:has(> .equipment-table--pld-version) {
+.equipment-table-wrap:has(> .equipment-table--pld-version),
+.equipment-table-wrap:has(> .equipment-table--shippingSoftware) {
   width: min(50%, 560px);
   min-width: min(100%, 400px);
   max-width: 100%;
@@ -1990,16 +1996,22 @@ tbody tr:last-child td {
 .equipment-table--instruments th:nth-child(2) { width: 22%; }
 .equipment-table--instruments th:nth-child(3) { width: 43%; }
 
-.equipment-table--software {
+.equipment-table--software,
+.equipment-table--shippingSoftware {
   min-width: 400px;
 }
 
-.equipment-table--software th:first-child {
+.equipment-table--software th:first-child,
+.equipment-table--shippingSoftware th:first-child {
   width: 30%;
 }
 
 .equipment-table--software th:nth-child(2) {
   width: 14%;
+}
+
+.equipment-table--shippingSoftware th:nth-child(2) {
+  width: 15.4%;
 }
 
 .equipment-table input {
@@ -2035,6 +2047,21 @@ tbody tr:last-child td {
 
 .equipment-table input:disabled {
   background: #f0f3f5;
+}
+
+.shipping-software-lock {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  cursor: pointer;
+}
+
+.equipment-table--shippingSoftware td:has(input:disabled),
+.equipment-table--shippingSoftware input:disabled {
+  background: #e2e7eb;
+  color: #52616b;
+  cursor: not-allowed;
 }
 
 .equipment-save-row {

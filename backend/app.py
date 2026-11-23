@@ -5,9 +5,13 @@ import os
 import re
 import secrets
 import sqlite3
+import smtplib
+import ssl
 import unicodedata
 from contextlib import closing
 from datetime import date, timedelta
+from email.message import EmailMessage
+from email.utils import parseaddr
 from functools import wraps
 from io import BytesIO
 from pathlib import Path
@@ -324,24 +328,41 @@ def load_equipment_config(config_path):
 
     if not isinstance(config, dict):
         raise ValueError("機器設定JSONのルートはオブジェクトにしてください。")
-    manager_choices = config.get("managerChoices", [])
-    if not isinstance(manager_choices, list) or len(manager_choices) > MAX_MANAGER_CHOICES:
+    configured_managers = config.get("managerChoices", [])
+    manager_choices = []
+    manager_emails = {}
+    if not isinstance(configured_managers, list) or len(configured_managers) > MAX_MANAGER_CHOICES:
         raise ValueError(
             f"計測器設定JSONのmanagerChoicesは{MAX_MANAGER_CHOICES}件以内の配列にしてください。"
         )
     manager_names = set()
-    for manager in manager_choices:
+    for manager in configured_managers:
+        if isinstance(manager, str):
+            manager_name = manager
+            manager_email = ""
+        elif isinstance(manager, dict) and manager.keys() == {"name", "email"}:
+            manager_name = manager["name"]
+            manager_email = manager["email"]
+        else:
+            raise ValueError(
+                "managerChoicesには担当者名の文字列、またはnameとemailを持つオブジェクトを指定してください。"
+            )
         if (
-            not isinstance(manager, str)
-            or len(manager) > 30
-            or manager != manager.strip()
-            or not is_japanese_text(manager)
-            or manager in manager_names
+            not isinstance(manager_name, str)
+            or len(manager_name) > 30
+            or manager_name != manager_name.strip()
+            or not is_japanese_text(manager_name)
+            or manager_name in manager_names
+            or not isinstance(manager_email, str)
+            or len(manager_email) > 254
+            or (manager_email and not re.fullmatch(r"[^@\s<>]+@[^@\s<>]+\.[^@\s<>]+", manager_email))
         ):
             raise ValueError(
-                "managerChoicesには重複しない日本語の担当者名を30文字以内で指定してください。"
+                "managerChoicesには重複しない日本語の担当者名（30文字以内）と正しいemailを指定してください。"
             )
-        manager_names.add(manager)
+        manager_names.add(manager_name)
+        manager_choices.append(manager_name)
+        manager_emails[manager_name] = manager_email
     choices = config.get("instrumentChoices", DEFAULT_INSTRUMENT_CHOICES)
     if not isinstance(choices, list) or len(choices) > MAX_INSTRUMENT_CHOICES:
         raise ValueError(
@@ -412,6 +433,7 @@ def load_equipment_config(config_path):
     validate_software_sections(software_sections)
     return {
         "managerChoices": manager_choices,
+        "managerEmails": manager_emails,
         "instrumentChoices": choices,
         "boards": boards,
         "jumpers": jumpers,
@@ -561,6 +583,14 @@ def create_app(test_config=None):
         SECRET_KEY=os.environ.get("LEDGER_SECRET_KEY"),
         LEDGER_USERNAME=os.environ.get("LEDGER_USERNAME"),
         LEDGER_PASSWORD_HASH=os.environ.get("LEDGER_PASSWORD_HASH"),
+        SMTP_HOST=os.environ.get("LEDGER_SMTP_HOST", ""),
+        SMTP_PORT=int(os.environ.get("LEDGER_SMTP_PORT", "587")),
+        SMTP_USERNAME=os.environ.get("LEDGER_SMTP_USERNAME", ""),
+        SMTP_PASSWORD=os.environ.get("LEDGER_SMTP_PASSWORD", ""),
+        SMTP_SENDER=os.environ.get("LEDGER_SMTP_SENDER", ""),
+        SMTP_USE_TLS=os.environ.get("LEDGER_SMTP_USE_TLS", "1").lower()
+        not in {"0", "false", "no"},
+        PUBLIC_URL=os.environ.get("LEDGER_PUBLIC_URL", ""),
         FRONTEND_DIST_PATH=os.environ.get(
             "LEDGER_FRONTEND_DIST_PATH",
             str(PROJECT_ROOT / "frontend" / "dist"),
@@ -587,6 +617,7 @@ def create_app(test_config=None):
     )
     app.config["INSTRUMENT_CHOICES"] = equipment_config["instrumentChoices"]
     app.config["MANAGER_CHOICES"] = equipment_config["managerChoices"]
+    app.config["MANAGER_EMAILS"] = equipment_config["managerEmails"]
     app.config["BOARD_DEFAULTS"] = equipment_config["boards"]
     app.config["JUMPERS"] = equipment_config["jumpers"]
     app.config["APPEARANCE_INSPECTION"] = equipment_config["appearanceInspection"]
@@ -623,6 +654,11 @@ def create_app(test_config=None):
                     file_content_type TEXT,
                     file_data BLOB,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE IF NOT EXISTS trial_number_reservations (
+                    trial_no TEXT PRIMARY KEY,
+                    reserved_by TEXT NOT NULL,
+                    reserved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
                 CREATE TABLE IF NOT EXISTS record_files (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -680,6 +716,36 @@ def create_app(test_config=None):
                     record_id INTEGER PRIMARY KEY REFERENCES records(id) ON DELETE CASCADE,
                     temperature TEXT NOT NULL DEFAULT '',
                     humidity TEXT NOT NULL DEFAULT ''
+                );
+                CREATE TABLE IF NOT EXISTS record_workflows (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    record_id INTEGER NOT NULL REFERENCES records(id) ON DELETE CASCADE,
+                    status TEXT NOT NULL CHECK (status IN ('draft', 'active', 'completed')),
+                    current_step INTEGER NOT NULL DEFAULT -1,
+                    created_by TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE INDEX IF NOT EXISTS record_workflows_record_id_idx
+                    ON record_workflows(record_id, id);
+                CREATE TABLE IF NOT EXISTS workflow_steps (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    workflow_id INTEGER NOT NULL REFERENCES record_workflows(id) ON DELETE CASCADE,
+                    step_order INTEGER NOT NULL,
+                    stage_name TEXT NOT NULL,
+                    assignee_name TEXT NOT NULL,
+                    assignee_email TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK (status IN ('pending', 'active', 'completed')),
+                    notified_at TEXT,
+                    completed_at TEXT,
+                    UNIQUE (workflow_id, step_order)
+                );
+                CREATE TABLE IF NOT EXISTS workflow_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    workflow_id INTEGER NOT NULL REFERENCES record_workflows(id) ON DELETE CASCADE,
+                    action TEXT NOT NULL,
+                    actor TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
                 """
             )
@@ -779,6 +845,39 @@ def create_app(test_config=None):
             return view(*args, **kwargs)
 
         return wrapped
+
+    def send_workflow_notification(record, step, record_id):
+        host = app.config["SMTP_HOST"]
+        sender = app.config["SMTP_SENDER"]
+        sender_address = parseaddr(sender)[1]
+        if (
+            not host
+            or not re.fullmatch(r"[^@\s<>]+@[^@\s<>]+\.[^@\s<>]+", sender_address)
+            or not 1 <= app.config["SMTP_PORT"] <= 65535
+        ):
+            raise RuntimeError("メール通知設定がありません。SMTP設定を環境変数に設定してください。")
+        message = EmailMessage()
+        message["Subject"] = "【試験記録台帳】回覧依頼"
+        message["From"] = sender
+        message["To"] = step["assignee_email"]
+        base_url = app.config["PUBLIC_URL"].rstrip("/") or request.host_url.rstrip("/")
+        message.set_content(
+            f"{step['assignee_name']} 様\n\n"
+            f"試験記録の回覧依頼です。\n"
+            f"試験番号: {record['trial_no']}\n"
+            f"案件名: {record['project_name']}\n"
+            f"段階: {step['stage_name']}\n\n"
+            f"記録を確認してください: {base_url}/?recordId={record_id}\n"
+        )
+        try:
+            with smtplib.SMTP(host, app.config["SMTP_PORT"], timeout=10) as smtp:
+                if app.config["SMTP_USE_TLS"]:
+                    smtp.starttls(context=ssl.create_default_context())
+                if app.config["SMTP_USERNAME"]:
+                    smtp.login(app.config["SMTP_USERNAME"], app.config["SMTP_PASSWORD"])
+                smtp.send_message(message)
+        except (OSError, smtplib.SMTPException) as error:
+            raise RuntimeError("メールを送信できませんでした。SMTP設定と接続を確認してください。") from error
 
     # フォーム入力値を共通ルールで検証するヘルパー。
     def validate_text(value, max_length, pattern, message):
@@ -1000,6 +1099,44 @@ def create_app(test_config=None):
             managerStats=manager_stats,
         )
 
+    @app.post("/api/trial-numbers/next")
+    @require_login
+    @require_csrf
+    def reserve_next_trial_number():
+        prefix = date.today().strftime("%y%m")
+        with closing(connect_db()) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            used_numbers = connection.execute(
+                """
+                SELECT trial_no FROM records WHERE trial_no LIKE ?
+                UNION
+                SELECT trial_no FROM trial_number_reservations WHERE trial_no LIKE ?
+                """,
+                (f"{prefix}%", f"{prefix}%"),
+            ).fetchall()
+            serials = [
+                int(match.group(1))
+                for row in used_numbers
+                if (match := re.fullmatch(rf"{prefix}(\d{{4}})", row["trial_no"]))
+            ]
+            next_serial = max(serials, default=0) + 1
+            if next_serial > 9999:
+                return jsonify(error="今月の採番上限（9999件）に達しました。"), 409
+            trial_no = f"{prefix}{next_serial:04d}"
+            connection.execute(
+                "INSERT INTO trial_number_reservations (trial_no, reserved_by) VALUES (?, ?)",
+                (trial_no, session["username"]),
+            )
+        return jsonify(trialNo=trial_no), 201
+
+    def trial_number_exists(connection, trial_no, exclude_record_id=None):
+        query = "SELECT 1 FROM records WHERE trial_no = ? COLLATE NOCASE"
+        parameters = [trial_no]
+        if exclude_record_id is not None:
+            query += " AND id != ?"
+            parameters.append(exclude_record_id)
+        return connection.execute(query, parameters).fetchone() is not None
+
     # 記録の一覧取得と新規登録をまとめて扱う API。
     # GET は検索条件による一覧取得、POST は新規レコード登録。
     @app.route("/api/records", methods=["GET", "POST"])
@@ -1105,6 +1242,11 @@ def create_app(test_config=None):
             return jsonify(error=str(error)), 400
 
         with closing(connect_db()) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if trial_number_exists(connection, values["trialNo"]):
+                return jsonify(
+                    error=f"試験番号「{values['trialNo']}」は既に登録されています。"
+                ), 409
             cursor = connection.execute(
                 """
                 INSERT INTO records (
@@ -1159,6 +1301,7 @@ def create_app(test_config=None):
             return jsonify(error="登録する記録を1件以上指定してください。"), 400
 
         validated_submissions = []
+        seen_trial_numbers = {}
         total_file_size = 0
         for index, submission in enumerate(submissions, start=1):
             if not isinstance(submission, dict):
@@ -1170,6 +1313,15 @@ def create_app(test_config=None):
             )
             if error:
                 return jsonify(error=f"{index}件目: {error[0]}"), error[1]
+            normalized_trial_no = values["trialNo"].casefold()
+            if normalized_trial_no in seen_trial_numbers:
+                return jsonify(
+                    error=(
+                        f"{index}件目: 試験番号「{values['trialNo']}」は"
+                        f"{seen_trial_numbers[normalized_trial_no]}件目と重複しています。"
+                    )
+                ), 409
+            seen_trial_numbers[normalized_trial_no] = index
             total_file_size += sum(len(file_data) for _, _, file_data in files)
             if total_file_size > MAX_TOTAL_FILE_SIZE:
                 return jsonify(error="試験結果ファイルの合計は100 MB以下にしてください。"), 413
@@ -1181,6 +1333,17 @@ def create_app(test_config=None):
             validated_submissions.append((values, registration_date, files))
 
         with closing(connect_db()) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            for index, (values, _registration_date, _files) in enumerate(
+                validated_submissions, start=1
+            ):
+                if trial_number_exists(connection, values["trialNo"]):
+                    return jsonify(
+                        error=(
+                            f"{index}件目: 試験番号「{values['trialNo']}」"
+                            "は既に登録されています。"
+                        )
+                    ), 409
             created_records = []
             for values, registration_date, files in validated_submissions:
                 cursor = connection.execute(
@@ -1450,9 +1613,214 @@ def create_app(test_config=None):
         return jsonify(
             instrumentChoices=app.config["INSTRUMENT_CHOICES"],
             managerChoices=app.config["MANAGER_CHOICES"],
+            managerEmails=app.config["MANAGER_EMAILS"],
             manualTests=app.config["MANUAL_TESTS"],
             softwareSections=app.config["SOFTWARE_SECTIONS"],
         )
+
+    def latest_workflow(connection, record_id):
+        return connection.execute(
+            "SELECT * FROM record_workflows WHERE record_id = ? ORDER BY id DESC LIMIT 1",
+            (record_id,),
+        ).fetchone()
+
+    @app.get("/api/records/<int:record_id>/workflow")
+    @require_login
+    def get_record_workflow(record_id):
+        with closing(connect_db()) as connection:
+            if not connection.execute("SELECT id FROM records WHERE id = ?", (record_id,)).fetchone():
+                abort(404)
+            workflow = latest_workflow(connection, record_id)
+            if not workflow:
+                return jsonify(workflow=None)
+            steps = connection.execute(
+                "SELECT * FROM workflow_steps WHERE workflow_id = ? ORDER BY step_order",
+                (workflow["id"],),
+            ).fetchall()
+            events = connection.execute(
+                "SELECT action, actor, created_at FROM workflow_events WHERE workflow_id = ? ORDER BY id",
+                (workflow["id"],),
+            ).fetchall()
+        return jsonify(
+            workflow={
+                "id": workflow["id"],
+                "status": workflow["status"],
+                "currentStep": workflow["current_step"],
+                "createdAt": workflow["created_at"],
+                "updatedAt": workflow["updated_at"],
+                "steps": [
+                    {
+                        "stageName": step["stage_name"],
+                        "assigneeName": step["assignee_name"],
+                        "assigneeEmail": step["assignee_email"],
+                        "status": step["status"],
+                        "notifiedAt": step["notified_at"],
+                        "completedAt": step["completed_at"],
+                    }
+                    for step in steps
+                ],
+                "events": [dict(event) for event in events],
+            }
+        )
+
+    @app.put("/api/records/<int:record_id>/workflow")
+    @require_login
+    @require_csrf
+    def save_record_workflow(record_id):
+        data = request.get_json(silent=True)
+        steps = data.get("steps") if isinstance(data, dict) else None
+        if not isinstance(steps, list) or not 1 <= len(steps) <= 20:
+            return jsonify(error="回覧段階は1～20件で指定してください。"), 400
+        normalized_steps = []
+        for index, step in enumerate(steps, start=1):
+            if not isinstance(step, dict):
+                return jsonify(error=f"{index}段階目の入力形式が正しくありません。"), 400
+            stage_name = step.get("stageName")
+            assignee_name = step.get("assigneeName")
+            assignee_email = step.get("assigneeEmail")
+            if (
+                not isinstance(stage_name, str) or not stage_name.strip() or len(stage_name.strip()) > 50
+                or not isinstance(assignee_name, str) or not assignee_name.strip() or len(assignee_name.strip()) > 50
+                or not isinstance(assignee_email, str)
+                or len(assignee_email.strip()) > 254
+                or not re.fullmatch(r"[^@\s<>]+@[^@\s<>]+\.[^@\s<>]+", assignee_email.strip())
+            ):
+                return jsonify(
+                    error=f"{index}段階目の段階名・担当者名・メールアドレスを正しく入力してください。"
+                ), 400
+            normalized_steps.append(
+                (stage_name.strip(), assignee_name.strip(), assignee_email.strip())
+            )
+
+        with closing(connect_db()) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if not connection.execute("SELECT id FROM records WHERE id = ?", (record_id,)).fetchone():
+                abort(404)
+            workflow = latest_workflow(connection, record_id)
+            if workflow and workflow["status"] == "active":
+                return jsonify(error="回覧中のフローは変更できません。"), 409
+            if workflow and workflow["status"] == "draft":
+                workflow_id = workflow["id"]
+                connection.execute("DELETE FROM workflow_steps WHERE workflow_id = ?", (workflow_id,))
+                connection.execute(
+                    "UPDATE record_workflows SET current_step = -1, created_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (session["username"], workflow_id),
+                )
+                connection.execute("DELETE FROM workflow_events WHERE workflow_id = ?", (workflow_id,))
+            else:
+                cursor = connection.execute(
+                    "INSERT INTO record_workflows (record_id, status, created_by) VALUES (?, 'draft', ?)",
+                    (record_id, session["username"]),
+                )
+                workflow_id = cursor.lastrowid
+            connection.executemany(
+                """
+                INSERT INTO workflow_steps (
+                    workflow_id, step_order, stage_name, assignee_name, assignee_email, status
+                ) VALUES (?, ?, ?, ?, ?, 'pending')
+                """,
+                [
+                    (workflow_id, index, *step)
+                    for index, step in enumerate(normalized_steps)
+                ],
+            )
+            connection.execute(
+                "INSERT INTO workflow_events (workflow_id, action, actor) VALUES (?, 'configured', ?)",
+                (workflow_id, session["username"]),
+            )
+        return jsonify(success=True), 200
+
+    @app.post("/api/records/<int:record_id>/workflow/start")
+    @require_login
+    @require_csrf
+    def start_record_workflow(record_id):
+        try:
+            with closing(connect_db()) as connection, connection:
+                connection.execute("BEGIN IMMEDIATE")
+                record = connection.execute(
+                    "SELECT trial_no, project_name FROM records WHERE id = ?", (record_id,)
+                ).fetchone()
+                if not record:
+                    abort(404)
+                workflow = latest_workflow(connection, record_id)
+                if not workflow or workflow["status"] != "draft":
+                    return jsonify(error="開始できる保存済みの回覧フローがありません。"), 409
+                step = connection.execute(
+                    "SELECT * FROM workflow_steps WHERE workflow_id = ? AND step_order = 0",
+                    (workflow["id"],),
+                ).fetchone()
+                send_workflow_notification(record, step, record_id)
+                connection.execute(
+                    "UPDATE workflow_steps SET status = 'active', notified_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (step["id"],),
+                )
+                connection.execute(
+                    "UPDATE record_workflows SET status = 'active', current_step = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (workflow["id"],),
+                )
+                connection.execute(
+                    "INSERT INTO workflow_events (workflow_id, action, actor) VALUES (?, 'started', ?)",
+                    (workflow["id"], session["username"]),
+                )
+        except RuntimeError as error:
+            return jsonify(error=str(error)), 503
+        return jsonify(success=True)
+
+    @app.post("/api/records/<int:record_id>/workflow/advance")
+    @require_login
+    @require_csrf
+    def advance_record_workflow(record_id):
+        try:
+            with closing(connect_db()) as connection, connection:
+                connection.execute("BEGIN IMMEDIATE")
+                record = connection.execute(
+                    "SELECT trial_no, project_name FROM records WHERE id = ?", (record_id,)
+                ).fetchone()
+                if not record:
+                    abort(404)
+                workflow = latest_workflow(connection, record_id)
+                if not workflow or workflow["status"] != "active":
+                    return jsonify(error="進行中の回覧フローがありません。"), 409
+                current = connection.execute(
+                    "SELECT * FROM workflow_steps WHERE workflow_id = ? AND step_order = ?",
+                    (workflow["id"], workflow["current_step"]),
+                ).fetchone()
+                following = connection.execute(
+                    "SELECT * FROM workflow_steps WHERE workflow_id = ? AND step_order = ?",
+                    (workflow["id"], workflow["current_step"] + 1),
+                ).fetchone()
+                if following:
+                    send_workflow_notification(record, following, record_id)
+                    connection.execute(
+                        "UPDATE workflow_steps SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        (current["id"],),
+                    )
+                    connection.execute(
+                        "UPDATE workflow_steps SET status = 'active', notified_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        (following["id"],),
+                    )
+                    connection.execute(
+                        "UPDATE record_workflows SET current_step = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        (workflow["current_step"] + 1, workflow["id"]),
+                    )
+                    action = "forwarded"
+                else:
+                    connection.execute(
+                        "UPDATE workflow_steps SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        (current["id"],),
+                    )
+                    connection.execute(
+                        "UPDATE record_workflows SET status = 'completed', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        (workflow["id"],),
+                    )
+                    action = "completed"
+                connection.execute(
+                    "INSERT INTO workflow_events (workflow_id, action, actor) VALUES (?, ?, ?)",
+                    (workflow["id"], action, session["username"]),
+                )
+        except RuntimeError as error:
+            return jsonify(error=str(error)), 503
+        return jsonify(success=True)
 
     @app.put("/api/records/<int:record_id>/details")
     @app.put("/api/records/<int:record_id>")
@@ -1583,12 +1951,24 @@ def create_app(test_config=None):
             return jsonify(error="削除する添付ファイルの指定が正しくありません。"), 400
 
         with closing(connect_db()) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
             record = connection.execute(
-                "SELECT id FROM records WHERE id = ?",
+                "SELECT id, trial_no FROM records WHERE id = ?",
                 (record_id,),
             ).fetchone()
             if not record:
                 abort(404)
+            if (
+                record["trial_no"].casefold() != values["trialNo"].casefold()
+                and trial_number_exists(
+                    connection,
+                    values["trialNo"],
+                    exclude_record_id=record_id,
+                )
+            ):
+                return jsonify(
+                    error=f"試験番号「{values['trialNo']}」は既に登録されています。"
+                ), 409
 
             if remove_file_ids or files:
                 existing_file_ids = {

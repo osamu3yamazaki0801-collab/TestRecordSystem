@@ -117,6 +117,12 @@ button {
   font-weight: 400;
 }
 
+.selected-file-name {
+  color: var(--text);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
 .record-form-fields {
   display: grid;
   min-width: 0;
@@ -187,6 +193,16 @@ button {
   outline: none;
   border-color: var(--accent-dark);
   box-shadow: 0 0 0 3px rgba(201, 163, 101, 0.17);
+}
+
+.trial-number-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+}
+
+.trial-number-controls input {
+  min-width: 0;
 }
 
 /* Keep the former equal grid cell widths as a baseline while packing resized fields. */
@@ -1256,7 +1272,7 @@ tbody tr:last-child td {
 
 .record-detail-tabs {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 8px;
   margin-top: 0;
   padding: 12px 0;
@@ -1277,6 +1293,91 @@ tbody tr:last-child td {
   text-align: center;
   overflow-wrap: anywhere;
   cursor: pointer;
+}
+
+.workflow-panel {
+  display: grid;
+  gap: 16px;
+  max-width: 1000px;
+  padding: 8px 0 24px;
+}
+
+.workflow-panel h2,
+.workflow-history h3 {
+  margin: 0;
+}
+
+.workflow-status {
+  margin: 0;
+  font-weight: 700;
+}
+
+.workflow-status--active {
+  color: #8a6a32;
+}
+
+.workflow-status--completed {
+  color: var(--success);
+}
+
+.workflow-steps,
+.workflow-history ol {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.workflow-step {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-alt);
+}
+
+.workflow-step-heading,
+.workflow-step-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.workflow-step-heading {
+  justify-content: space-between;
+}
+
+.workflow-step-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr));
+  gap: 12px;
+}
+
+.workflow-step-status--active {
+  color: #8a6a32;
+  font-weight: 700;
+}
+
+.workflow-step-status--completed {
+  color: var(--success);
+}
+
+.workflow-actions {
+  align-items: center;
+}
+
+.workflow-history {
+  display: grid;
+  gap: 8px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.workflow-history li {
+  overflow-wrap: anywhere;
 }
 
 .record-detail-tabs button[aria-selected="true"] {
@@ -2100,6 +2201,10 @@ tbody tr:last-child td {
 @media (max-width: 760px) {
   .record-detail-content {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .record-detail-tabs {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .record-detail-resizer {

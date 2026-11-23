@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import TrialResults from './TrialResults';
+import Workflow from './Workflow';
 
 // 添付ファイルの最大サイズは 100MB。
 // 画面遷移ごとの見出し文言と検索条件の初期値をまとめて管理する。
@@ -344,6 +345,7 @@ function App() {
   const [detailEquipment, setDetailEquipment] = useState(null);
   const [instrumentChoices, setInstrumentChoices] = useState([]);
   const [managerChoices, setManagerChoices] = useState(null);
+  const [managerEmails, setManagerEmails] = useState({});
   const [softwareSections, setSoftwareSections] = useState(DEFAULT_SOFTWARE_SECTIONS);
   const [detailJumpers, setDetailJumpers] = useState(null);
   const [detailAppearance, setDetailAppearance] = useState(null);
@@ -378,10 +380,12 @@ function App() {
     apiRequest('/api/equipment-config', csrfToken.current).then((config) => {
       if (!active) return;
       setManagerChoices(config.managerChoices);
+      setManagerEmails(config.managerEmails || {});
       setSoftwareSections(config.softwareSections || DEFAULT_SOFTWARE_SECTIONS);
     }).catch((error) => {
       if (!active) return;
       setManagerChoices([]);
+      setManagerEmails({});
       setRegisterMessage({ text: error.message, type: 'error' });
       if (error instanceof ApiError && error.status === 401) {
         csrfToken.current = '';
@@ -470,6 +474,7 @@ function App() {
       setDetailEquipment(equipment);
       setInstrumentChoices(config.instrumentChoices);
       setManagerChoices(config.managerChoices);
+      setManagerEmails(config.managerEmails || {});
       setSoftwareSections(config.softwareSections || DEFAULT_SOFTWARE_SECTIONS);
       setDetailJumpers(jumpers);
       setDetailAppearance(appearance);
@@ -608,6 +613,29 @@ function App() {
       } else {
         setSessionMessage(error.message);
       }
+    }
+  }
+
+  async function allocateTrialNumber(rowId) {
+    try {
+      const result = await apiRequest(
+        '/api/trial-numbers/next',
+        csrfToken.current,
+        { method: 'POST' },
+      );
+      setRegistrationRows((current) => current.map((row) => (
+        row.rowId === rowId ? { ...row, trialNo: result.trialNo } : row
+      )));
+      setRegisterMessage({ text: `試験番号「${result.trialNo}」を採番しました。`, type: 'success' });
+      return true;
+    } catch (error) {
+      setRegisterMessage({ text: error.message, type: 'error' });
+      if (error instanceof ApiError && error.status === 401) {
+        csrfToken.current = '';
+        setAuthenticated(false);
+        setLoginError(error.message);
+      }
+      return false;
     }
   }
 
@@ -899,6 +927,7 @@ function App() {
       handleRegister={handleRegister}
       registrationRows={registrationRows}
       setRegistrationRows={setRegistrationRows}
+      allocateTrialNumber={allocateTrialNumber}
       managerChoices={managerChoices}
       editingRecordId={editingRecordId}
       registering={registering}
@@ -920,6 +949,8 @@ function App() {
             recordDirty={recordDirty}
             equipment={detailEquipment}
             instrumentChoices={instrumentChoices}
+            managerChoices={managerChoices}
+            managerEmails={managerEmails}
             setEquipment={setDetailEquipment}
             jumpers={detailJumpers}
             setJumpers={setDetailJumpers}
@@ -1127,9 +1158,10 @@ function App() {
   );
 }
 
-function RegistrationForm({ registerForm, handleRegister, registrationRows, setRegistrationRows, managerChoices, editingRecordId, registering, cancelRegister, registerMessage, onChange }) {
+function RegistrationForm({ registerForm, handleRegister, registrationRows, setRegistrationRows, allocateTrialNumber, managerChoices, editingRecordId, registering, cancelRegister, registerMessage, onChange }) {
   const availableManagers = managerChoices || [];
   const isEditing = editingRecordId !== null;
+  const [allocatingRowIds, setAllocatingRowIds] = useState([]);
 
   function updateRow(index, name, value) {
     setRegistrationRows((rows) => rows.map((row, rowIndex) => (
@@ -1152,11 +1184,21 @@ function RegistrationForm({ registerForm, handleRegister, registrationRows, setR
     onChange();
   }
 
+  async function allocateNumber(rowId) {
+    setAllocatingRowIds((current) => [...current, rowId]);
+    try {
+      await allocateTrialNumber(rowId);
+    } finally {
+      setAllocatingRowIds((current) => current.filter((id) => id !== rowId));
+    }
+  }
+
   return (
     <form id={isEditing ? 'record-edit-form' : undefined} ref={registerForm} className="form-panel" onSubmit={handleRegister} onChange={onChange}>
       <fieldset className="record-form-fields" disabled={registering}>
         {!isEditing && <p className="field-help">追加した行には、1件目の案件名・登録日・担当者が引き継がれます。</p>}
         {registrationRows.map((values, index) => {
+          const rowId = values.rowId ?? index;
           const managerOptions = values.manager && !availableManagers.includes(values.manager)
             ? [values.manager, ...availableManagers]
             : availableManagers;
@@ -1177,7 +1219,29 @@ function RegistrationForm({ registerForm, handleRegister, registrationRows, setR
                 </header>
               )}
               <div className="form-grid">
-                <label className="field record-field-trial-no"><span>試験番号<span className="required-badge">必須</span></span><input name={fieldName('trialNo')} type="text" maxLength="20" placeholder="例: 1234567890" value={values.trialNo} onChange={(event) => updateRow(index, 'trialNo', event.target.value)} required /></label>
+                <div className="field record-field-trial-no">
+                  <span>試験番号<span className="required-badge">必須</span></span>
+                  <div className="trial-number-controls">
+                    <input
+                      name={fieldName('trialNo')}
+                      type="text"
+                      maxLength="20"
+                      placeholder="例: 26110001"
+                      aria-label={`記録 ${index + 1} の試験番号`}
+                      value={values.trialNo}
+                      onChange={(event) => updateRow(index, 'trialNo', event.target.value)}
+                      required
+                    />
+                    {!isEditing && (
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        disabled={registering || allocatingRowIds.includes(rowId)}
+                        onClick={() => allocateNumber(rowId)}
+                      >{allocatingRowIds.includes(rowId) ? '採番中...' : '採番'}</button>
+                    )}
+                  </div>
+                </div>
                 <label className="field record-field-project-name"><span>案件名</span><input name={fieldName('projectName')} type="text" maxLength="30" placeholder="例: JR東海N700S CI" value={values.projectName} onChange={(event) => updateRow(index, 'projectName', event.target.value)} /></label>
                 <label className="field record-field-product-no"><span>製番</span><input name={fieldName('productNo')} type="text" maxLength="30" placeholder="例: 12345678 DG 0001" value={values.productNo} onChange={(event) => updateRow(index, 'productNo', event.target.value)} /></label>
                 <label className="field record-field-registration-date"><span>登録日</span><input name={fieldName('registrationDate')} type="text" maxLength="8" value={values.registrationDate} onChange={(event) => updateRow(index, 'registrationDate', event.target.value)} placeholder="yyyymmdd" required /></label>
@@ -1201,8 +1265,9 @@ function RegistrationForm({ registerForm, handleRegister, registrationRows, setR
                         onChange={(event) => updateRow(index, 'resultFile', event.currentTarget.files?.[0] || null)}
                       />
                     </label>
-                    <small className="field-help">自動試験システムの試験結果CSVをインポートしてください。</small>
-                    {values.resultFile && <small className="field-help selected-file-name">{values.resultFile.name}</small>}
+                    {values.resultFile
+                      ? <small className="selected-file-name">{values.resultFile.name}</small>
+                      : <small className="field-help">自動試験システムの試験結果CSVをインポートしてください。</small>}
                   </div>
                 )}
               </div>
@@ -1222,7 +1287,7 @@ function RegistrationForm({ registerForm, handleRegister, registrationRows, setR
   );
 }
 
-function RecordDetails({ record, onClose, recordDirty, registering, registrationForm, equipment, instrumentChoices, softwareSections, setEquipment, jumpers, setJumpers, appearance, setAppearance, insertionKeys, setInsertionKeys, manualTests, setManualTests, manualConditions, setManualConditions, onDirty, cancelRegister, registerMessage, pendingFiles, existingFiles, onFilesChanged, onPowerBoardReportChanged, csrfToken, setAuthenticated, setLoginError }) {
+function RecordDetails({ record, onClose, recordDirty, registering, registrationForm, equipment, instrumentChoices, managerChoices, managerEmails, softwareSections, setEquipment, jumpers, setJumpers, appearance, setAppearance, insertionKeys, setInsertionKeys, manualTests, setManualTests, manualConditions, setManualConditions, onDirty, cancelRegister, registerMessage, pendingFiles, existingFiles, onFilesChanged, onPowerBoardReportChanged, csrfToken, setAuthenticated, setLoginError }) {
   const [activeTab, setActiveTab] = useState(() => (
     existingFiles.some((file) => /\.csv$/i.test(file.fileName)) ? 2 : 0
   ));
@@ -1237,6 +1302,7 @@ function RecordDetails({ record, onClose, recordDirty, registering, registration
     '受入検査',
     '試験結果',
     '出荷検査',
+    '回覧',
   ];
 
   function getMaxCommonPanelWidth(divider) {
@@ -1594,6 +1660,18 @@ function RecordDetails({ record, onClose, recordDirty, registering, registration
           )}
           {index === 3 && (
             <EquipmentForm equipment={equipment} setEquipment={setEquipment} disabled={registering} onDirty={onDirty} groupKeys={['shippingSoftware']} />
+          )}
+          {index === 4 && (
+            <Workflow
+              record={record}
+              managerChoices={managerChoices}
+              managerEmails={managerEmails}
+              active={activeTab === 4}
+              csrfToken={csrfToken}
+              request={apiRequest}
+              setAuthenticated={setAuthenticated}
+              setLoginError={setLoginError}
+            />
           )}
         </div>
       ))}

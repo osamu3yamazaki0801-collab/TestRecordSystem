@@ -162,6 +162,7 @@ async function submitForm(dom) {
 }
 
 function makeSearchFetch(calls, createResponse, dashboardSummary) {
+  let nextTrialNumber = 0;
   return async (url, options = {}) => {
     const parsedUrl = new URL(url, 'http://localhost');
     const method = options.method || 'GET';
@@ -179,6 +180,10 @@ function makeSearchFetch(calls, createResponse, dashboardSummary) {
         currentMonth: '2026年11月',
         managerStats: { year: 2026, managers: [] },
       });
+    }
+    if (parsedUrl.pathname === '/api/trial-numbers/next' && method === 'POST') {
+      nextTrialNumber += 1;
+      return response({ trialNo: `2611${String(nextTrialNumber).padStart(4, '0')}` }, 201);
     }
     if (parsedUrl.pathname === '/api/records' && method === 'POST') {
       const result = createResponse(options.body);
@@ -226,6 +231,29 @@ test('the registration form visibly marks trial number and manager as required',
     const requiredFields = [...app.dom.window.document.querySelectorAll('.registration-page .required-badge')]
       .map((badge) => badge.parentElement.textContent.replace('必須', '').trim());
     assert.deepEqual(requiredFields, ['試験番号', '担当者']);
+  } finally {
+    await app.cleanup();
+  }
+});
+
+test('each registration row can reserve the next trial number', async () => {
+  const calls = [];
+  const app = await mountApp('http://localhost/', makeSearchFetch(calls, () => ({})));
+  try {
+    await click(app.dom, findNav(app.dom, '記録の登録'));
+    await waitFor(() => app.dom.window.document.querySelector('input[name="trialNo"]'), 'registration form was not rendered');
+    const firstNumber = app.dom.window.document.querySelector('input[name="trialNo"]');
+    const firstButton = app.dom.window.document.querySelector('.trial-number-controls button');
+    await click(app.dom, firstButton);
+    await waitFor(() => firstNumber.value === '26110001', 'first number was not allocated');
+
+    await click(app.dom, [...app.dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '記録を追加'));
+    await waitFor(() => app.dom.window.document.querySelector('input[name="trialNo-1"]'), 'second registration row was not added');
+    const secondNumber = app.dom.window.document.querySelector('input[name="trialNo-1"]');
+    const secondButton = app.dom.window.document.querySelectorAll('.trial-number-controls button')[1];
+    await click(app.dom, secondButton);
+    await waitFor(() => secondNumber.value === '26110002', 'second number was not allocated');
+    assert.equal(calls.filter((call) => call.path === '/api/trial-numbers/next' && call.method === 'POST').length, 2);
   } finally {
     await app.cleanup();
   }
@@ -302,6 +330,10 @@ test('a successful single registration uploads its CSV and navigates to search',
       () => app.dom.window.document.querySelector('.record-field-result-file .selected-file-name')?.textContent === file.fileName,
       'selected CSV filename was not shown',
     );
+    assert.equal(
+      app.dom.window.document.querySelector('.record-field-result-file').textContent.includes('自動試験システムの試験結果CSVをインポートしてください。'),
+      false,
+    );
     await click(app.dom, app.dom.window.document.querySelector('.registration-page button[type="submit"]'));
 
     await waitFor(
@@ -316,11 +348,11 @@ test('a successful single registration uploads its CSV and navigates to search',
   }
 });
 
-test('a failed registration stays on the registration screen', async () => {
+test('a duplicate-trial-number error stays on the registration screen and shows the message', async () => {
   const calls = [];
   const fetchMock = makeSearchFetch(calls, () => ({
-    httpStatus: 400,
-    data: { error: 'CSVの形式が正しくありません。' },
+    httpStatus: 409,
+    data: { error: '試験番号「T-ERROR」は既に登録されています。' },
   }));
   const app = await mountApp('http://localhost/', fetchMock);
   try {
@@ -332,8 +364,8 @@ test('a failed registration stays on the registration screen', async () => {
     await click(app.dom, app.dom.window.document.querySelector('.registration-page button[type="submit"]'));
 
     await waitFor(
-      () => app.dom.window.document.body.textContent.includes('CSVの形式が正しくありません。'),
-      'registration error was not shown',
+      () => app.dom.window.document.body.textContent.includes('試験番号「T-ERROR」は既に登録されています。'),
+      'duplicate trial number message was not shown',
     );
     assert.ok(findNav(app.dom, '記録の登録').classList.contains('active'));
     assert.equal(findNav(app.dom, '記録の検索').classList.contains('active'), false);
@@ -755,7 +787,7 @@ test('power board PDF reports upload and preview at the end of the pre-test chec
   }
 });
 
-test('shipping inspection has independent software fields with shared save and cancel', async () => {
+test('shipping inspection saves independently and workflow assignees use the manager list', async () => {
   const record = {
     id: 20, trialNo: 'T-020', projectName: '案件', productNo: 'A20',
     registrationDate: '20261114', manager: '山田太郎', files: [],
@@ -777,13 +809,18 @@ test('shipping inspection has independent software fields with shared save and c
     const { pathname } = new URL(url, 'http://localhost');
     if (pathname === '/api/session') return response({ authenticated: true, username: 'operator', csrfToken: 'test-token' });
     if (pathname === '/api/records') return response([record]);
-    if (pathname === '/api/equipment-config') return response({ managerChoices: ['山田太郎'], instrumentChoices: [] });
+    if (pathname === '/api/equipment-config') return response({
+      managerChoices: ['山田太郎'],
+      managerEmails: { 山田太郎: 'yamada@example.jp' },
+      instrumentChoices: [],
+    });
     if (pathname === '/api/records/20/equipment') return response(equipment);
     if (pathname === '/api/records/20/jumpers') return response([]);
     if (pathname === '/api/records/20/appearance-checks') return response(appearance);
     if (pathname === '/api/records/20/insertion-keys') return response(insertionKeys());
     if (pathname === '/api/records/20/manual-tests') return response([]);
     if (pathname === '/api/records/20/manual-test-conditions') return response({ temperature: '', humidity: '' });
+    if (pathname === '/api/records/20/workflow') return response({ workflow: null });
     if (pathname === '/api/records/20/details' && options.method === 'PUT') {
       saves.push(options.body);
       if (failSave) return response({ error: '保存に失敗しました。' }, 500);
@@ -801,10 +838,11 @@ test('shipping inspection has independent software fields with shared save and c
     const document = app.dom.window.document;
     await waitFor(() => document.querySelector('.record-detail-tabs'), 'detail tabs were not rendered');
     const tabs = [...document.querySelectorAll('.record-detail-tabs [role="tab"]')];
-    assert.deepEqual(tabs.map((tab) => tab.textContent), ['試験情報', '受入検査', '試験結果', '出荷検査']);
+    assert.deepEqual(tabs.map((tab) => tab.textContent), ['試験情報', '受入検査', '試験結果', '出荷検査', '回覧']);
     await act(async () => tabs[0].dispatchEvent(new app.dom.window.KeyboardEvent('keydown', { key: 'End', bubbles: true })));
-    assert.equal(tabs[3].getAttribute('aria-selected'), 'true');
-    assert.equal(document.activeElement, tabs[3]);
+    assert.equal(tabs[4].getAttribute('aria-selected'), 'true');
+    assert.equal(document.activeElement, tabs[4]);
+    await click(app.dom, tabs[3]);
     const panel = document.getElementById('record-detail-panel-3');
     assert.equal(panel.hidden, false);
     assert.deepEqual([...panel.querySelectorAll('h3')].map((heading) => heading.textContent),
@@ -872,6 +910,27 @@ test('shipping inspection has independent software fields with shared save and c
     assert.equal(JSON.parse(saves[2].get('equipment')).shippingSoftwareSameAsTrial, false);
     assert.ok(inputs.every((input) => !input.disabled));
     assert.deepEqual(inputs.map((input) => input.value), ['出荷アプリ', 'SHIP001', 'SHIP-1', 'ABC123']);
+    await click(app.dom, tabs[4]);
+    await waitFor(() => document.querySelectorAll('#record-detail-panel-4 .workflow-panel select').length === 4, 'workflow fields were not loaded');
+    const workflowLabels = [...document.querySelectorAll('#record-detail-panel-4 .workflow-panel label.field')];
+    const stageSelects = workflowLabels
+      .filter((label) => label.querySelector('span').textContent === '段階名')
+      .map((label) => label.querySelector('select'));
+    const assigneeSelects = workflowLabels
+      .filter((label) => label.querySelector('span').textContent === '担当者')
+      .map((label) => label.querySelector('select'));
+    assert.deepEqual(stageSelects.map((select) => [...select.options].map((option) => option.value)), [
+      ['', '担当', '調査', '承認'],
+      ['', '担当', '調査', '承認'],
+    ]);
+    assert.ok(assigneeSelects.every((select) => (
+      [...select.options].some((option) => option.value === '山田太郎')
+    )));
+    await selectValue(app.dom, assigneeSelects[0], '山田太郎');
+    assert.equal(
+      document.querySelector('#record-detail-panel-4 input[type="email"]').value,
+      'yamada@example.jp',
+    );
   } finally {
     await app.cleanup();
   }

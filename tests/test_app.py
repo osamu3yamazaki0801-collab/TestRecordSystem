@@ -1,5 +1,6 @@
 import io
 import json
+import smtplib
 import sqlite3
 import tempfile
 import unittest
@@ -157,11 +158,51 @@ class LedgerAppTests(unittest.TestCase):
     def test_records_require_login_and_login_requires_csrf(self):
         self.assertEqual(self.client.get("/api/records").status_code, 401)
         self.assertEqual(self.client.get("/api/dashboard").status_code, 401)
+        self.assertEqual(self.client.post("/api/trial-numbers/next").status_code, 401)
         response = self.client.post(
             "/api/login",
             json={"username": "operator", "password": "correct horse battery"},
         )
         self.assertEqual(response.status_code, 400)
+
+    def test_trial_number_allocator_skips_existing_and_reserves_consecutive_numbers(self):
+        self.login()
+        url = "/api/trial-numbers/next"
+        self.assertEqual(self.client.post(url).status_code, 400)
+        prefix = date.today().strftime("%y%m")
+        existing = self.client.post(
+            "/api/records",
+            data=self.record_data(trialNo=f"{prefix}0005"),
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(existing.status_code, 201)
+
+        first = self.client.post(url, headers={"X-CSRF-Token": self.csrf_token})
+        second = self.client.post(url, headers={"X-CSRF-Token": self.csrf_token})
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(first.json["trialNo"], f"{prefix}0006")
+        self.assertEqual(second.status_code, 201)
+        self.assertEqual(second.json["trialNo"], f"{prefix}0007")
+
+    def test_trial_number_allocator_rejects_numbers_after_monthly_limit(self):
+        self.login()
+        prefix = date.today().strftime("%y%m")
+        with closing(sqlite3.connect(self.app.config["DATABASE_PATH"])) as connection, connection:
+            connection.execute(
+                """
+                INSERT INTO records (trial_no, project_name, product_no, registration_date, manager)
+                VALUES (?, '', '', ?, '山田太郎')
+                """,
+                (f"{prefix}9999", date.today().strftime("%Y%m%d")),
+            )
+
+        response = self.client.post(
+            "/api/trial-numbers/next",
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+
+        self.assertEqual(response.status_code, 409)
 
     def test_register_and_search_shared_sqlite_records(self):
         self.login()
@@ -190,6 +231,24 @@ class LedgerAppTests(unittest.TestCase):
         self.assertEqual(login_response.status_code, 200)
         self.assertEqual(len(second_client.get("/api/records").json), 1)
 
+    def test_registration_rejects_duplicate_trial_number(self):
+        self.login()
+        first = self.client.post(
+            "/api/records",
+            data=self.record_data(trialNo="T-DUPLICATE"),
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        duplicate = self.client.post(
+            "/api/records",
+            data=self.record_data(trialNo="t-duplicate"),
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(duplicate.status_code, 409)
+        self.assertIn("試験番号「t-duplicate」は既に登録されています。", duplicate.json["error"])
+        self.assertEqual(len(self.client.get("/api/records").json), 1)
+
     def test_batch_registration_creates_all_records(self):
         self.login()
         submissions = [
@@ -212,6 +271,68 @@ class LedgerAppTests(unittest.TestCase):
             [record["trialNo"] for record in self.client.get("/api/records").json],
             ["T-002", "T-001"],
         )
+
+    def test_batch_registration_rejects_duplicate_numbers_without_partial_records(self):
+        self.login()
+        existing = self.client.post(
+            "/api/records",
+            data=self.record_data(trialNo="T-EXISTING"),
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(existing.status_code, 201)
+        headers = {"X-CSRF-Token": self.csrf_token}
+
+        existing_duplicate = self.client.post(
+            "/api/records/batch",
+            json=[
+                self.record_data(trialNo="T-NEW"),
+                self.record_data(trialNo="t-existing"),
+            ],
+            headers=headers,
+        )
+        self.assertEqual(existing_duplicate.status_code, 409)
+        self.assertIn("既に登録されています", existing_duplicate.json["error"])
+        self.assertEqual(len(self.client.get("/api/records").json), 1)
+
+        batch_duplicate = self.client.post(
+            "/api/records/batch",
+            json=[
+                self.record_data(trialNo="T-REPEATED"),
+                self.record_data(trialNo="t-repeated"),
+            ],
+            headers=headers,
+        )
+        self.assertEqual(batch_duplicate.status_code, 409)
+        self.assertIn("2件目", batch_duplicate.json["error"])
+        self.assertIn("1件目と重複", batch_duplicate.json["error"])
+        self.assertEqual(len(self.client.get("/api/records").json), 1)
+
+    def test_record_update_rejects_another_records_trial_number(self):
+        self.login()
+        first = self.client.post(
+            "/api/records",
+            data=self.record_data(trialNo="T-FIRST"),
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        second = self.client.post(
+            "/api/records",
+            data=self.record_data(trialNo="T-SECOND"),
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 201)
+
+        response = self.client.put(
+            f"/api/records/{second.json['id']}",
+            data=self.record_data(trialNo="T-FIRST"),
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("既に登録されています", response.json["error"])
+        records = {record["id"]: record for record in self.client.get("/api/records").json}
+        self.assertEqual(records[first.json["id"]]["trialNo"], "T-FIRST")
+        self.assertEqual(records[second.json["id"]]["trialNo"], "T-SECOND")
 
     def test_batch_registration_saves_each_csv_with_its_record(self):
         self.login()
@@ -385,9 +506,9 @@ class LedgerAppTests(unittest.TestCase):
     def test_jumper_checks_persist_and_are_independent(self):
         self.login()
         record_ids = [self.client.post(
-            "/api/records", data=self.record_data(),
+            "/api/records", data=self.record_data(trialNo=f"T-JUMPER-{index}"),
             headers={"X-CSRF-Token": self.csrf_token},
-        ).json["id"] for _ in range(2)]
+        ).json["id"] for index in range(2)]
         url = f"/api/records/{record_ids[0]}/jumpers"
         initial = self.client.get(url).json
         self.assertEqual(initial, [
@@ -585,9 +706,9 @@ class LedgerAppTests(unittest.TestCase):
     def test_equipment_defaults_and_persistence(self):
         self.login()
         record_ids = [self.client.post(
-            "/api/records", data=self.record_data(),
+            "/api/records", data=self.record_data(trialNo=f"T-EQUIPMENT-{index}"),
             headers={"X-CSRF-Token": self.csrf_token},
-        ).json["id"] for _ in range(2)]
+        ).json["id"] for index in range(2)]
         url = f"/api/records/{record_ids[0]}/equipment"
         equipment = self.client.get(url).json
         self.assertEqual(equipment["boards"], self.app.config["BOARD_DEFAULTS"])
@@ -795,6 +916,7 @@ class LedgerAppTests(unittest.TestCase):
             {
                 "instrumentChoices": choices,
                 "managerChoices": managers,
+                "managerEmails": {manager: "" for manager in managers},
                 "manualTests": [],
                 "softwareSections": self.app.config["SOFTWARE_SECTIONS"],
             },
@@ -803,9 +925,38 @@ class LedgerAppTests(unittest.TestCase):
         self.assertEqual(len(equipment["instruments"]), 5)
         self.assertEqual(equipment["boards"], boards)
 
+    def test_manager_choices_load_configured_email_addresses(self):
+        config_path = Path(self.temp_dir.name) / "manager-emails.json"
+        manager_choices = [
+            {"name": "山田", "email": "yamada@example.com"},
+            {"name": "佐藤", "email": ""},
+        ]
+        config_path.write_text(json.dumps({"managerChoices": manager_choices}), encoding="utf-8")
+        configured_app = create_app({
+            "TESTING": True,
+            "SECRET_KEY": "test-secret-key",
+            "DATABASE_PATH": str(Path(self.temp_dir.name) / "manager-emails.sqlite3"),
+            "EQUIPMENT_CONFIG_PATH": str(config_path),
+        })
+        client = configured_app.test_client()
+        with client.session_transaction() as session:
+            session["username"] = "operator"
+
+        config = client.get("/api/equipment-config").json
+        self.assertEqual(config["managerChoices"], ["山田", "佐藤"])
+        self.assertEqual(
+            config["managerEmails"],
+            {"山田": "yamada@example.com", "佐藤": ""},
+        )
+
     def test_equipment_config_rejects_invalid_manager_choices(self):
         config_path = Path(self.temp_dir.name) / "invalid-manager-choices.json"
-        for managers in (["担当者", "担当者"], ["operator"], ["名" * 31]):
+        for managers in (
+            ["担当者", "担当者"],
+            ["operator"],
+            ["名" * 31],
+            [{"name": "担当者", "email": "invalid"}],
+        ):
             with self.subTest(managers=managers):
                 config_path.write_text(
                     json.dumps({"managerChoices": managers}), encoding="utf-8",
@@ -1339,10 +1490,10 @@ class LedgerAppTests(unittest.TestCase):
         self.assertEqual(self.client.get("/api/records/999999/insertion-keys").status_code, 404)
         record_ids = [
             self.client.post(
-                "/api/records", data=self.record_data(),
+                "/api/records", data=self.record_data(trialNo=f"T-INSERTION-{index}"),
                 headers={"X-CSRF-Token": self.csrf_token},
             ).json["id"]
-            for _ in range(2)
+            for index in range(2)
         ]
         url = f"/api/records/{record_ids[0]}/insertion-keys"
         keys = self.client.get(url).json
@@ -1384,10 +1535,10 @@ class LedgerAppTests(unittest.TestCase):
         self.assertEqual(self.client.get("/api/records/999999/appearance-checks").status_code, 404)
         record_ids = [
             self.client.post(
-                "/api/records", data=self.record_data(),
+                "/api/records", data=self.record_data(trialNo=f"T-APPEARANCE-{index}"),
                 headers={"X-CSRF-Token": self.csrf_token},
             ).json["id"]
-            for _ in range(2)
+            for index in range(2)
         ]
         checks = self.client.get(f"/api/records/{record_ids[0]}/appearance-checks").json["checks"]
         checks["dustCap:MDM57"] = True
@@ -2032,6 +2183,108 @@ class LedgerAppTests(unittest.TestCase):
             self.client.get(f"/api/records/{record_id}/file").status_code,
             401,
         )
+
+    def test_workflow_routes_email_to_each_step_and_records_completion(self):
+        self.assertEqual(self.client.get("/api/records/1/workflow").status_code, 401)
+        self.login()
+        record_id = self.client.post(
+            "/api/records",
+            data=self.record_data(),
+            headers={"X-CSRF-Token": self.csrf_token},
+        ).json["id"]
+        url = f"/api/records/{record_id}/workflow"
+        steps = [
+            {"stageName": "担当", "assigneeName": "担当者", "assigneeEmail": "staff@example.com"},
+            {"stageName": "調査", "assigneeName": "調査者", "assigneeEmail": "investigator@example.com"},
+            {"stageName": "承認", "assigneeName": "承認者", "assigneeEmail": "approver@example.com"},
+        ]
+        self.assertEqual(self.client.get(url).json, {"workflow": None})
+        self.assertEqual(
+            self.client.put(url, json={"steps": steps}).status_code,
+            400,
+        )
+        invalid = self.client.put(
+            url,
+            json={"steps": [{**steps[0], "assigneeEmail": "invalid"}]},
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(invalid.status_code, 400)
+        saved = self.client.put(
+            url, json={"steps": steps}, headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(saved.status_code, 200)
+        self.app.config.update(SMTP_HOST="", SMTP_SENDER="")
+        self.assertEqual(self.client.post(
+            f"{url}/start", headers={"X-CSRF-Token": self.csrf_token},
+        ).status_code, 503)
+        self.assertEqual(self.client.get(url).json["workflow"]["status"], "draft")
+
+        self.app.config.update(
+            SMTP_HOST="smtp.example.com",
+            SMTP_PORT=587,
+            SMTP_SENDER="ledger@example.com",
+            SMTP_USE_TLS=False,
+            PUBLIC_URL="https://ledger.example.com/",
+        )
+        with patch("backend.app.smtplib.SMTP") as smtp_factory:
+            smtp = smtp_factory.return_value.__enter__.return_value
+            start = self.client.post(f"{url}/start", headers={"X-CSRF-Token": self.csrf_token})
+            self.assertEqual(start.status_code, 200)
+            self.assertEqual(smtp.send_message.call_args.args[0]["To"], "staff@example.com")
+            self.assertIn("https://ledger.example.com/?recordId=", smtp.send_message.call_args.args[0].get_content())
+            self.assertEqual(
+                self.client.put(url, json={"steps": steps}, headers={"X-CSRF-Token": self.csrf_token}).status_code,
+                409,
+            )
+            for email in ("investigator@example.com", "approver@example.com"):
+                advanced = self.client.post(f"{url}/advance", headers={"X-CSRF-Token": self.csrf_token})
+                self.assertEqual(advanced.status_code, 200)
+                self.assertEqual(smtp.send_message.call_args.args[0]["To"], email)
+            completed = self.client.post(f"{url}/advance", headers={"X-CSRF-Token": self.csrf_token})
+            self.assertEqual(completed.status_code, 200)
+
+        workflow = self.client.get(url).json["workflow"]
+        self.assertEqual(workflow["status"], "completed")
+        self.assertEqual([step["status"] for step in workflow["steps"]], ["completed"] * 3)
+        self.assertEqual(
+            [event["action"] for event in workflow["events"]],
+            ["configured", "started", "forwarded", "forwarded", "completed"],
+        )
+
+    def test_workflow_email_failure_does_not_advance_the_current_step(self):
+        self.login()
+        record_id = self.client.post(
+            "/api/records",
+            data=self.record_data(),
+            headers={"X-CSRF-Token": self.csrf_token},
+        ).json["id"]
+        url = f"/api/records/{record_id}/workflow"
+        steps = [
+            {"stageName": "担当", "assigneeName": "担当者", "assigneeEmail": "staff@example.com"},
+            {"stageName": "調査", "assigneeName": "調査者", "assigneeEmail": "investigator@example.com"},
+        ]
+        self.client.put(url, json={"steps": steps}, headers={"X-CSRF-Token": self.csrf_token})
+        self.app.config.update(
+            SMTP_HOST="smtp.example.com",
+            SMTP_PORT=587,
+            SMTP_SENDER="ledger@example.com",
+            SMTP_USE_TLS=False,
+        )
+        with patch("backend.app.smtplib.SMTP") as smtp_factory:
+            smtp = smtp_factory.return_value.__enter__.return_value
+            response = self.client.post(
+                f"{url}/start", headers={"X-CSRF-Token": self.csrf_token},
+            )
+            self.assertEqual(response.status_code, 200)
+            smtp.send_message.side_effect = smtplib.SMTPException("delivery failed")
+            response = self.client.post(
+                f"{url}/advance", headers={"X-CSRF-Token": self.csrf_token},
+            )
+        self.assertEqual(response.status_code, 503)
+        workflow = self.client.get(url).json["workflow"]
+        self.assertEqual(workflow["status"], "active")
+        self.assertEqual(workflow["currentStep"], 0)
+        self.assertEqual([step["status"] for step in workflow["steps"]], ["active", "pending"])
 
     def test_rejects_registering_multiple_files(self):
         self.login()

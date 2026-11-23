@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import TrialResults from './TrialResults';
 import Workflow from './Workflow';
+import WorkflowInbox from './WorkflowInbox';
+import UserManagement from './UserManagement';
 
 // 添付ファイルの最大サイズは 100MB。
 // 画面遷移ごとの見出し文言と検索条件の初期値をまとめて管理する。
@@ -38,6 +40,14 @@ const SECTION_DETAILS = {
   searchSection: {
     title: '記録の検索',
     description: '登録済みの試験記録を検索できます。',
+  },
+  workflowInboxSection: {
+    title: '回覧タスク',
+    description: 'ログイン中の担当者に割り当てられた回覧を確認します。',
+  },
+  userManagementSection: {
+    title: 'ユーザー管理',
+    description: '担当者アカウントを作成・管理します。',
   },
 };
 const EMPTY_FILTERS = {
@@ -323,6 +333,7 @@ function App() {
   const registerForm = useRef(null);
   const [authenticated, setAuthenticated] = useState(false);
   const [username, setUsername] = useState('');
+  const [isAdmin, setIsAdmin] = useState(false);
   const [detailRecordId] = useState(() => new URLSearchParams(window.location.search).get('recordId'));
   const [section, setSection] = useState('dashboardSection');
   const [loginError, setLoginError] = useState('');
@@ -345,7 +356,7 @@ function App() {
   const [detailEquipment, setDetailEquipment] = useState(null);
   const [instrumentChoices, setInstrumentChoices] = useState([]);
   const [managerChoices, setManagerChoices] = useState(null);
-  const [managerEmails, setManagerEmails] = useState({});
+  const [workflowUsers, setWorkflowUsers] = useState([]);
   const [softwareSections, setSoftwareSections] = useState(DEFAULT_SOFTWARE_SECTIONS);
   const [detailJumpers, setDetailJumpers] = useState(null);
   const [detailAppearance, setDetailAppearance] = useState(null);
@@ -363,7 +374,8 @@ function App() {
       if (!active) return;
       csrfToken.current = session.csrfToken;
       if (session.authenticated) {
-        setUsername(session.username);
+        setUsername(session.displayName || session.username);
+        setIsAdmin(session.role === 'admin');
         setAuthenticated(true);
       }
     }).catch((error) => {
@@ -377,15 +389,18 @@ function App() {
   useEffect(() => {
     if (!authenticated || detailRecordId !== null) return undefined;
     let active = true;
-    apiRequest('/api/equipment-config', csrfToken.current).then((config) => {
+    Promise.all([
+      apiRequest('/api/equipment-config', csrfToken.current),
+      apiRequest('/api/workflow-users', csrfToken.current),
+    ]).then(([config, assignees]) => {
       if (!active) return;
       setManagerChoices(config.managerChoices);
-      setManagerEmails(config.managerEmails || {});
+      setWorkflowUsers(assignees.users);
       setSoftwareSections(config.softwareSections || DEFAULT_SOFTWARE_SECTIONS);
     }).catch((error) => {
       if (!active) return;
       setManagerChoices([]);
-      setManagerEmails({});
+      setWorkflowUsers([]);
       setRegisterMessage({ text: error.message, type: 'error' });
       if (error instanceof ApiError && error.status === 401) {
         csrfToken.current = '';
@@ -463,7 +478,8 @@ function App() {
       apiRequest(`/api/records/${detailRecordId}/insertion-keys`, csrfToken.current),
       apiRequest(`/api/records/${detailRecordId}/manual-tests`, csrfToken.current),
       apiRequest(`/api/records/${detailRecordId}/manual-test-conditions`, csrfToken.current),
-    ]).then(([result, equipment, jumpers, config, appearance, insertionKeys, manualTests, manualConditions]) => {
+      apiRequest('/api/workflow-users', csrfToken.current),
+    ]).then(([result, equipment, jumpers, config, appearance, insertionKeys, manualTests, manualConditions, assignees]) => {
       if (!active) return;
       const record = result.find((item) => String(item.id) === detailRecordId);
       if (!record) {
@@ -474,7 +490,7 @@ function App() {
       setDetailEquipment(equipment);
       setInstrumentChoices(config.instrumentChoices);
       setManagerChoices(config.managerChoices);
-      setManagerEmails(config.managerEmails || {});
+      setWorkflowUsers(assignees.users);
       setSoftwareSections(config.softwareSections || DEFAULT_SOFTWARE_SECTIONS);
       setDetailJumpers(jumpers);
       setDetailAppearance(appearance);
@@ -579,7 +595,8 @@ function App() {
         }),
       });
       csrfToken.current = result.csrfToken;
-      setUsername(result.username);
+      setUsername(result.displayName || result.username);
+      setIsAdmin(result.role === 'admin');
       setLoginError('');
       setSessionMessage('');
       setAuthenticated(true);
@@ -597,6 +614,7 @@ function App() {
       csrfToken.current = '';
       setAuthenticated(false);
       setUsername('');
+      setIsAdmin(false);
       setDashboard(null);
       setLoginError('');
       setSessionMessage('');
@@ -950,7 +968,7 @@ function App() {
             equipment={detailEquipment}
             instrumentChoices={instrumentChoices}
             managerChoices={managerChoices}
-            managerEmails={managerEmails}
+            workflowUsers={workflowUsers}
             setEquipment={setDetailEquipment}
             jumpers={detailJumpers}
             setJumpers={setDetailJumpers}
@@ -1002,6 +1020,8 @@ function App() {
           <NavLink target="dashboardSection" section={section} onNavigate={navigateTo} icon="⌂">概要</NavLink>
           <NavLink target="registerSection" section={section} onNavigate={navigateTo} icon="＋">記録の登録</NavLink>
           <NavLink target="searchSection" section={section} onNavigate={navigateTo} icon="⌕">記録の検索</NavLink>
+          <NavLink target="workflowInboxSection" section={section} onNavigate={navigateTo} icon="↪">回覧タスク</NavLink>
+          {isAdmin && <NavLink target="userManagementSection" section={section} onNavigate={navigateTo} icon="♙">ユーザー管理</NavLink>}
         </nav>
 
         <div className="sidebar-bottom">
@@ -1153,6 +1173,26 @@ function App() {
             </div>
           </section>
         )}
+
+        {section === 'workflowInboxSection' && (
+          <WorkflowInbox
+            active={section === 'workflowInboxSection'}
+            csrfToken={csrfToken.current}
+            request={apiRequest}
+            setAuthenticated={setAuthenticated}
+            setLoginError={setLoginError}
+          />
+        )}
+
+        {section === 'userManagementSection' && isAdmin && (
+          <UserManagement
+            active={section === 'userManagementSection'}
+            csrfToken={csrfToken.current}
+            request={apiRequest}
+            setAuthenticated={setAuthenticated}
+            setLoginError={setLoginError}
+          />
+        )}
       </main>
     </div>
   );
@@ -1287,7 +1327,7 @@ function RegistrationForm({ registerForm, handleRegister, registrationRows, setR
   );
 }
 
-function RecordDetails({ record, onClose, recordDirty, registering, registrationForm, equipment, instrumentChoices, managerChoices, managerEmails, softwareSections, setEquipment, jumpers, setJumpers, appearance, setAppearance, insertionKeys, setInsertionKeys, manualTests, setManualTests, manualConditions, setManualConditions, onDirty, cancelRegister, registerMessage, pendingFiles, existingFiles, onFilesChanged, onPowerBoardReportChanged, csrfToken, setAuthenticated, setLoginError }) {
+function RecordDetails({ record, onClose, recordDirty, registering, registrationForm, equipment, instrumentChoices, managerChoices, workflowUsers, softwareSections, setEquipment, jumpers, setJumpers, appearance, setAppearance, insertionKeys, setInsertionKeys, manualTests, setManualTests, manualConditions, setManualConditions, onDirty, cancelRegister, registerMessage, pendingFiles, existingFiles, onFilesChanged, onPowerBoardReportChanged, csrfToken, setAuthenticated, setLoginError }) {
   const [activeTab, setActiveTab] = useState(() => (
     existingFiles.some((file) => /\.csv$/i.test(file.fileName)) ? 2 : 0
   ));
@@ -1664,8 +1704,7 @@ function RecordDetails({ record, onClose, recordDirty, registering, registration
           {index === 4 && (
             <Workflow
               record={record}
-              managerChoices={managerChoices}
-              managerEmails={managerEmails}
+              workflowUsers={workflowUsers}
               active={activeTab === 4}
               csrfToken={csrfToken}
               request={apiRequest}

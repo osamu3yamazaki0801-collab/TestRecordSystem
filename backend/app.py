@@ -5,20 +5,16 @@ import os
 import re
 import secrets
 import sqlite3
-import smtplib
-import ssl
 import unicodedata
 from contextlib import closing
 from datetime import date, timedelta
-from email.message import EmailMessage
-from email.utils import parseaddr
 from functools import wraps
 from io import BytesIO
 from pathlib import Path
 
-from flask import Flask, abort, jsonify, request, send_file, send_from_directory, session
+from flask import Flask, abort, g, jsonify, request, send_file, send_from_directory, session
 from werkzeug.exceptions import RequestEntityTooLarge
-from werkzeug.security import check_password_hash
+from werkzeug.security import check_password_hash, generate_password_hash
 from waitress import serve
 from backend.trial_results import parse_trial_results_file
 
@@ -330,7 +326,6 @@ def load_equipment_config(config_path):
         raise ValueError("機器設定JSONのルートはオブジェクトにしてください。")
     configured_managers = config.get("managerChoices", [])
     manager_choices = []
-    manager_emails = {}
     if not isinstance(configured_managers, list) or len(configured_managers) > MAX_MANAGER_CHOICES:
         raise ValueError(
             f"計測器設定JSONのmanagerChoicesは{MAX_MANAGER_CHOICES}件以内の配列にしてください。"
@@ -339,13 +334,11 @@ def load_equipment_config(config_path):
     for manager in configured_managers:
         if isinstance(manager, str):
             manager_name = manager
-            manager_email = ""
-        elif isinstance(manager, dict) and manager.keys() == {"name", "email"}:
+        elif isinstance(manager, dict) and set(manager) in ({"name"}, {"name", "email"}):
             manager_name = manager["name"]
-            manager_email = manager["email"]
         else:
             raise ValueError(
-                "managerChoicesには担当者名の文字列、またはnameとemailを持つオブジェクトを指定してください。"
+                "managerChoicesには担当者名の文字列、またはnameを持つオブジェクトを指定してください。"
             )
         if (
             not isinstance(manager_name, str)
@@ -353,16 +346,12 @@ def load_equipment_config(config_path):
             or manager_name != manager_name.strip()
             or not is_japanese_text(manager_name)
             or manager_name in manager_names
-            or not isinstance(manager_email, str)
-            or len(manager_email) > 254
-            or (manager_email and not re.fullmatch(r"[^@\s<>]+@[^@\s<>]+\.[^@\s<>]+", manager_email))
         ):
             raise ValueError(
-                "managerChoicesには重複しない日本語の担当者名（30文字以内）と正しいemailを指定してください。"
+                "managerChoicesには重複しない日本語の担当者名（30文字以内）を指定してください。"
             )
         manager_names.add(manager_name)
         manager_choices.append(manager_name)
-        manager_emails[manager_name] = manager_email
     choices = config.get("instrumentChoices", DEFAULT_INSTRUMENT_CHOICES)
     if not isinstance(choices, list) or len(choices) > MAX_INSTRUMENT_CHOICES:
         raise ValueError(
@@ -433,7 +422,6 @@ def load_equipment_config(config_path):
     validate_software_sections(software_sections)
     return {
         "managerChoices": manager_choices,
-        "managerEmails": manager_emails,
         "instrumentChoices": choices,
         "boards": boards,
         "jumpers": jumpers,
@@ -583,14 +571,6 @@ def create_app(test_config=None):
         SECRET_KEY=os.environ.get("LEDGER_SECRET_KEY"),
         LEDGER_USERNAME=os.environ.get("LEDGER_USERNAME"),
         LEDGER_PASSWORD_HASH=os.environ.get("LEDGER_PASSWORD_HASH"),
-        SMTP_HOST=os.environ.get("LEDGER_SMTP_HOST", ""),
-        SMTP_PORT=int(os.environ.get("LEDGER_SMTP_PORT", "587")),
-        SMTP_USERNAME=os.environ.get("LEDGER_SMTP_USERNAME", ""),
-        SMTP_PASSWORD=os.environ.get("LEDGER_SMTP_PASSWORD", ""),
-        SMTP_SENDER=os.environ.get("LEDGER_SMTP_SENDER", ""),
-        SMTP_USE_TLS=os.environ.get("LEDGER_SMTP_USE_TLS", "1").lower()
-        not in {"0", "false", "no"},
-        PUBLIC_URL=os.environ.get("LEDGER_PUBLIC_URL", ""),
         FRONTEND_DIST_PATH=os.environ.get(
             "LEDGER_FRONTEND_DIST_PATH",
             str(PROJECT_ROOT / "frontend" / "dist"),
@@ -617,7 +597,6 @@ def create_app(test_config=None):
     )
     app.config["INSTRUMENT_CHOICES"] = equipment_config["instrumentChoices"]
     app.config["MANAGER_CHOICES"] = equipment_config["managerChoices"]
-    app.config["MANAGER_EMAILS"] = equipment_config["managerEmails"]
     app.config["BOARD_DEFAULTS"] = equipment_config["boards"]
     app.config["JUMPERS"] = equipment_config["jumpers"]
     app.config["APPEARANCE_INSPECTION"] = equipment_config["appearanceInspection"]
@@ -653,6 +632,15 @@ def create_app(test_config=None):
                     file_name TEXT,
                     file_content_type TEXT,
                     file_data BLOB,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                    manager_name TEXT COLLATE NOCASE UNIQUE,
+                    password_hash TEXT NOT NULL,
+                    role TEXT NOT NULL CHECK (role IN ('admin', 'user')),
+                    is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
                 CREATE TABLE IF NOT EXISTS trial_number_reservations (
@@ -735,6 +723,7 @@ def create_app(test_config=None):
                     stage_name TEXT NOT NULL,
                     assignee_name TEXT NOT NULL,
                     assignee_email TEXT NOT NULL,
+                    assignee_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
                     status TEXT NOT NULL CHECK (status IN ('pending', 'active', 'completed')),
                     notified_at TEXT,
                     completed_at TEXT,
@@ -749,6 +738,13 @@ def create_app(test_config=None):
                 );
                 """
             )
+            workflow_step_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(workflow_steps)")
+            }
+            if "assignee_user_id" not in workflow_step_columns:
+                connection.execute(
+                    "ALTER TABLE workflow_steps ADD COLUMN assignee_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL"
+                )
             appearance_columns = {
                 row["name"] for row in connection.execute("PRAGMA table_info(appearance_checks)")
             }
@@ -821,6 +817,20 @@ def create_app(test_config=None):
                 WHERE file_data IS NOT NULL
                 """
             )
+            if not connection.execute("SELECT 1 FROM users LIMIT 1").fetchone():
+                username = app.config["LEDGER_USERNAME"]
+                password_hash = app.config["LEDGER_PASSWORD_HASH"]
+                if not username or not password_hash:
+                    raise RuntimeError(
+                        "初回管理者のLEDGER_USERNAMEとLEDGER_PASSWORD_HASHを設定してください。"
+                    )
+                connection.execute(
+                    """
+                    INSERT INTO users (username, manager_name, password_hash, role)
+                    VALUES (?, NULL, ?, 'admin')
+                    """,
+                    (username, password_hash),
+                )
 
     # POST / PUT / DELETE のような更新系 API では CSRF トークンを必須とする。
     def require_csrf(view):
@@ -837,47 +847,51 @@ def create_app(test_config=None):
         return wrapped
 
     # ログイン必須の API に付けるデコレータ。
+    def current_user():
+        user_id = session.get("user_id")
+        legacy_username = session.get("username")
+        with closing(connect_db()) as connection:
+            if user_id:
+                row = connection.execute(
+                    "SELECT id, username, manager_name, role, is_active FROM users WHERE id = ?",
+                    (user_id,),
+                ).fetchone()
+            else:
+                row = None
+                if legacy_username:
+                    row = connection.execute(
+                        "SELECT id, username, manager_name, role, is_active FROM users WHERE username = ? COLLATE NOCASE",
+                        (legacy_username,),
+                    ).fetchone()
+        if not row or not row["is_active"]:
+            session.clear()
+            return None
+        session["user_id"] = row["id"]
+        session["username"] = row["username"]
+        session["display_name"] = row["manager_name"] or row["username"]
+        session["role"] = row["role"]
+        return row
+
     def require_login(view):
         @wraps(view)
         def wrapped(*args, **kwargs):
-            if not session.get("username"):
+            user = current_user()
+            if not user:
                 return jsonify(error="ログインしてください。"), 401
+            g.user = user
             return view(*args, **kwargs)
 
         return wrapped
 
-    def send_workflow_notification(record, step, record_id):
-        host = app.config["SMTP_HOST"]
-        sender = app.config["SMTP_SENDER"]
-        sender_address = parseaddr(sender)[1]
-        if (
-            not host
-            or not re.fullmatch(r"[^@\s<>]+@[^@\s<>]+\.[^@\s<>]+", sender_address)
-            or not 1 <= app.config["SMTP_PORT"] <= 65535
-        ):
-            raise RuntimeError("メール通知設定がありません。SMTP設定を環境変数に設定してください。")
-        message = EmailMessage()
-        message["Subject"] = "【試験記録台帳】回覧依頼"
-        message["From"] = sender
-        message["To"] = step["assignee_email"]
-        base_url = app.config["PUBLIC_URL"].rstrip("/") or request.host_url.rstrip("/")
-        message.set_content(
-            f"{step['assignee_name']} 様\n\n"
-            f"試験記録の回覧依頼です。\n"
-            f"試験番号: {record['trial_no']}\n"
-            f"案件名: {record['project_name']}\n"
-            f"段階: {step['stage_name']}\n\n"
-            f"記録を確認してください: {base_url}/?recordId={record_id}\n"
-        )
-        try:
-            with smtplib.SMTP(host, app.config["SMTP_PORT"], timeout=10) as smtp:
-                if app.config["SMTP_USE_TLS"]:
-                    smtp.starttls(context=ssl.create_default_context())
-                if app.config["SMTP_USERNAME"]:
-                    smtp.login(app.config["SMTP_USERNAME"], app.config["SMTP_PASSWORD"])
-                smtp.send_message(message)
-        except (OSError, smtplib.SMTPException) as error:
-            raise RuntimeError("メールを送信できませんでした。SMTP設定と接続を確認してください。") from error
+    def require_admin(view):
+        @wraps(view)
+        @require_login
+        def wrapped(*args, **kwargs):
+            if g.user["role"] != "admin":
+                return jsonify(error="管理者権限が必要です。"), 403
+            return view(*args, **kwargs)
+
+        return wrapped
 
     # フォーム入力値を共通ルールで検証するヘルパー。
     def validate_text(value, max_length, pattern, message):
@@ -1009,16 +1023,20 @@ def create_app(test_config=None):
     # 現在のログイン状態と CSRF トークンを返す。
     @app.get("/api/session")
     def get_session():
+        user = current_user()
         if "csrf_token" not in session:
             session["csrf_token"] = secrets.token_urlsafe(32)
         return jsonify(
-            authenticated=bool(session.get("username")),
+            authenticated=user is not None,
+            userId=user["id"] if user else None,
             username=session.get("username"),
+            displayName=session.get("display_name"),
+            role=session.get("role"),
             csrfToken=session["csrf_token"],
         )
 
     # ログイン API。
-    # 環境変数に設定されたユーザー名とパスワードハッシュを照合する。
+    # SQLiteに保存した個人アカウントの認証情報を照合する。
     @app.post("/api/login")
     @require_csrf
     def login():
@@ -1027,23 +1045,33 @@ def create_app(test_config=None):
             return jsonify(error="ログイン情報の形式が正しくありません。"), 400
         username = data.get("username", "")
         password = data.get("password", "")
-        configured_username = app.config.get("LEDGER_USERNAME") or ""
-        password_hash = app.config.get("LEDGER_PASSWORD_HASH") or ""
-        if (
-            not isinstance(username, str)
-            or not isinstance(password, str)
-            or not configured_username
-            or not password_hash
-            or not hmac.compare_digest(username, configured_username)
-            or not check_password_hash(password_hash, password)
-        ):
+        if not isinstance(username, str) or not isinstance(password, str):
+            return jsonify(error="ユーザIDまたはパスワードが正しくありません。"), 401
+        with closing(connect_db()) as connection:
+            user = connection.execute(
+                """
+                SELECT id, username, manager_name, password_hash, role
+                FROM users WHERE username = ? COLLATE NOCASE AND is_active = 1
+                """,
+                (username.strip(),),
+            ).fetchone()
+        if not user or not check_password_hash(user["password_hash"], password):
             return jsonify(error="ユーザIDまたはパスワードが正しくありません。"), 401
 
         session.clear()
         session.permanent = True
-        session["username"] = configured_username
+        session["user_id"] = user["id"]
+        session["username"] = user["username"]
+        session["display_name"] = user["manager_name"] or user["username"]
+        session["role"] = user["role"]
         session["csrf_token"] = secrets.token_urlsafe(32)
-        return jsonify(username=configured_username, csrfToken=session["csrf_token"])
+        return jsonify(
+            userId=user["id"],
+            username=user["username"],
+            displayName=session["display_name"],
+            role=user["role"],
+            csrfToken=session["csrf_token"],
+        )
 
     # ログアウト API。
     @app.post("/api/logout")
@@ -1051,6 +1079,148 @@ def create_app(test_config=None):
     @require_csrf
     def logout():
         session.clear()
+        return jsonify(success=True)
+
+    @app.get("/api/workflow-users")
+    @require_login
+    def get_workflow_users():
+        with closing(connect_db()) as connection:
+            users = connection.execute(
+                """
+                SELECT id, manager_name
+                FROM users
+                WHERE role = 'user' AND is_active = 1 AND manager_name IS NOT NULL
+                ORDER BY manager_name COLLATE NOCASE
+                """
+            ).fetchall()
+        return jsonify(users=[
+            {"id": user["id"], "name": user["manager_name"]}
+            for user in users
+        ])
+
+    @app.get("/api/admin/users")
+    @require_admin
+    def get_admin_users():
+        with closing(connect_db()) as connection:
+            users = connection.execute(
+                """
+                SELECT id, username, manager_name, role, is_active, created_at
+                FROM users ORDER BY role, username COLLATE NOCASE
+                """
+            ).fetchall()
+            assigned_managers = {
+                row["manager_name"].casefold()
+                for row in connection.execute(
+                    "SELECT manager_name FROM users WHERE manager_name IS NOT NULL"
+                )
+            }
+        return jsonify(users=[
+            {
+                "id": user["id"],
+                "username": user["username"],
+                "managerName": user["manager_name"],
+                "role": user["role"],
+                "isActive": bool(user["is_active"]),
+                "createdAt": user["created_at"],
+            }
+            for user in users
+        ], managerChoices=[
+            manager for manager in app.config["MANAGER_CHOICES"]
+            if manager.casefold() not in assigned_managers
+        ])
+
+    @app.post("/api/admin/users")
+    @require_admin
+    @require_csrf
+    def create_user():
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify(error="アカウント情報の形式が正しくありません。"), 400
+        username = data.get("username")
+        manager_name = data.get("managerName")
+        password = data.get("password")
+        if (
+            not isinstance(username, str)
+            or not re.fullmatch(r"[A-Za-z0-9._-]{3,50}", username)
+            or not isinstance(manager_name, str)
+            or manager_name not in app.config["MANAGER_CHOICES"]
+            or not isinstance(password, str)
+            or not 12 <= len(password) <= 256
+        ):
+            return jsonify(
+                error="ユーザーIDは半角英数字等3～50文字、担当者候補と12～256文字のパスワードを指定してください。"
+            ), 400
+        password_hash = generate_password_hash(password)
+        with closing(connect_db()) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                cursor = connection.execute(
+                    """
+                    INSERT INTO users (username, manager_name, password_hash, role)
+                    VALUES (?, ?, ?, 'user')
+                    """,
+                    (username, manager_name, password_hash),
+                )
+            except sqlite3.IntegrityError:
+                return jsonify(error="ユーザーIDまたは担当者には既にアカウントが登録されています。"), 409
+            user_id = cursor.lastrowid
+            connection.execute(
+                """
+                UPDATE workflow_steps SET assignee_user_id = ?
+                WHERE assignee_name = ? AND assignee_user_id IS NULL
+                """,
+                (user_id, manager_name),
+            )
+        return jsonify(
+            id=user_id,
+            username=username,
+            managerName=manager_name,
+            role="user",
+            isActive=True,
+        ), 201
+
+    @app.put("/api/admin/users/<int:user_id>")
+    @require_admin
+    @require_csrf
+    def update_user(user_id):
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict) or not data:
+            return jsonify(error="変更するアカウント情報を指定してください。"), 400
+        if set(data) - {"password", "isActive"}:
+            return jsonify(error="変更できないアカウント項目が含まれています。"), 400
+        password = data.get("password")
+        is_active = data.get("isActive")
+        if "password" in data and (
+            not isinstance(password, str) or not 12 <= len(password) <= 256
+        ):
+            return jsonify(error="パスワードは12～256文字で指定してください。"), 400
+        if "isActive" in data and type(is_active) is not bool:
+            return jsonify(error="有効状態は真偽値で指定してください。"), 400
+
+        with closing(connect_db()) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            user = connection.execute(
+                "SELECT id, role, is_active FROM users WHERE id = ?", (user_id,)
+            ).fetchone()
+            if not user:
+                abort(404)
+            if "isActive" in data and not is_active:
+                if user_id == g.user["id"]:
+                    return jsonify(error="ログイン中の管理者は無効化できません。"), 400
+                if user["role"] == "admin" and connection.execute(
+                    "SELECT COUNT(*) FROM users WHERE role = 'admin' AND is_active = 1"
+                ).fetchone()[0] <= 1:
+                    return jsonify(error="有効な管理者を1人以上残してください。"), 400
+            if "password" in data:
+                connection.execute(
+                    "UPDATE users SET password_hash = ? WHERE id = ?",
+                    (generate_password_hash(password), user_id),
+                )
+            if "isActive" in data:
+                connection.execute(
+                    "UPDATE users SET is_active = ? WHERE id = ?",
+                    (int(is_active), user_id),
+                )
         return jsonify(success=True)
 
     # ダッシュボード表示に必要な件数と担当者別の月次集計を返す。
@@ -1613,7 +1783,6 @@ def create_app(test_config=None):
         return jsonify(
             instrumentChoices=app.config["INSTRUMENT_CHOICES"],
             managerChoices=app.config["MANAGER_CHOICES"],
-            managerEmails=app.config["MANAGER_EMAILS"],
             manualTests=app.config["MANUAL_TESTS"],
             softwareSections=app.config["SOFTWARE_SECTIONS"],
         )
@@ -1641,6 +1810,18 @@ def create_app(test_config=None):
                 "SELECT action, actor, created_at FROM workflow_events WHERE workflow_id = ? ORDER BY id",
                 (workflow["id"],),
             ).fetchall()
+        current_step = next(
+            (step for step in steps if step["step_order"] == workflow["current_step"]),
+            None,
+        )
+        can_advance = (
+            workflow["status"] == "active"
+            and current_step is not None
+            and (
+                current_step["assignee_user_id"] == g.user["id"]
+                or g.user["role"] == "admin"
+            )
+        )
         return jsonify(
             workflow={
                 "id": workflow["id"],
@@ -1648,11 +1829,14 @@ def create_app(test_config=None):
                 "currentStep": workflow["current_step"],
                 "createdAt": workflow["created_at"],
                 "updatedAt": workflow["updated_at"],
+                "canAdvance": can_advance,
+                "isAdminOverride": can_advance and g.user["role"] == "admin"
+                and current_step["assignee_user_id"] != g.user["id"],
                 "steps": [
                     {
                         "stageName": step["stage_name"],
                         "assigneeName": step["assignee_name"],
-                        "assigneeEmail": step["assignee_email"],
+                        "assigneeUserId": step["assignee_user_id"],
                         "status": step["status"],
                         "notifiedAt": step["notified_at"],
                         "completedAt": step["completed_at"],
@@ -1676,26 +1860,32 @@ def create_app(test_config=None):
             if not isinstance(step, dict):
                 return jsonify(error=f"{index}段階目の入力形式が正しくありません。"), 400
             stage_name = step.get("stageName")
-            assignee_name = step.get("assigneeName")
-            assignee_email = step.get("assigneeEmail")
             if (
                 not isinstance(stage_name, str) or not stage_name.strip() or len(stage_name.strip()) > 50
-                or not isinstance(assignee_name, str) or not assignee_name.strip() or len(assignee_name.strip()) > 50
-                or not isinstance(assignee_email, str)
-                or len(assignee_email.strip()) > 254
-                or not re.fullmatch(r"[^@\s<>]+@[^@\s<>]+\.[^@\s<>]+", assignee_email.strip())
+                or type(step.get("assigneeUserId")) is not int
+                or step["assigneeUserId"] <= 0
             ):
                 return jsonify(
-                    error=f"{index}段階目の段階名・担当者名・メールアドレスを正しく入力してください。"
+                    error=f"{index}段階目の段階名と有効な担当者を指定してください。"
                 ), 400
-            normalized_steps.append(
-                (stage_name.strip(), assignee_name.strip(), assignee_email.strip())
-            )
+            normalized_steps.append((stage_name.strip(), step["assigneeUserId"]))
 
         with closing(connect_db()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             if not connection.execute("SELECT id FROM records WHERE id = ?", (record_id,)).fetchone():
                 abort(404)
+            resolved_steps = []
+            for index, (stage_name, assignee_user_id) in enumerate(normalized_steps, start=1):
+                assignee = connection.execute(
+                    """
+                    SELECT id, manager_name FROM users
+                    WHERE id = ? AND role = 'user' AND is_active = 1
+                    """,
+                    (assignee_user_id,),
+                ).fetchone()
+                if not assignee:
+                    return jsonify(error=f"{index}段階目の担当者アカウントが見つからないか無効です。"), 400
+                resolved_steps.append((stage_name, assignee["id"], assignee["manager_name"]))
             workflow = latest_workflow(connection, record_id)
             if workflow and workflow["status"] == "active":
                 return jsonify(error="回覧中のフローは変更できません。"), 409
@@ -1716,110 +1906,143 @@ def create_app(test_config=None):
             connection.executemany(
                 """
                 INSERT INTO workflow_steps (
-                    workflow_id, step_order, stage_name, assignee_name, assignee_email, status
-                ) VALUES (?, ?, ?, ?, ?, 'pending')
+                    workflow_id, step_order, stage_name, assignee_name, assignee_email,
+                    assignee_user_id, status
+                ) VALUES (?, ?, ?, ?, '', ?, 'pending')
                 """,
                 [
-                    (workflow_id, index, *step)
-                    for index, step in enumerate(normalized_steps)
+                    (workflow_id, index, stage_name, assignee_name, assignee_user_id)
+                    for index, (stage_name, assignee_user_id, assignee_name) in enumerate(resolved_steps)
                 ],
             )
             connection.execute(
                 "INSERT INTO workflow_events (workflow_id, action, actor) VALUES (?, 'configured', ?)",
-                (workflow_id, session["username"]),
+                (workflow_id, session["display_name"]),
             )
         return jsonify(success=True), 200
+
+    @app.get("/api/workflow-inbox")
+    @require_login
+    def get_workflow_inbox():
+        query = """
+            SELECT records.id, records.trial_no, records.project_name,
+                   records.manager, workflows.current_step, workflows.updated_at,
+                   steps.stage_name, steps.assignee_user_id, steps.assignee_name
+            FROM record_workflows AS workflows
+            JOIN records ON records.id = workflows.record_id
+            JOIN workflow_steps AS steps
+              ON steps.workflow_id = workflows.id
+             AND steps.step_order = workflows.current_step
+            WHERE workflows.status = 'active' AND steps.status = 'active'
+        """
+        parameters = ()
+        if g.user["role"] != "admin":
+            query += " AND steps.assignee_user_id = ?"
+            parameters = (g.user["id"],)
+        query += " ORDER BY workflows.updated_at, records.trial_no"
+        with closing(connect_db()) as connection:
+            tasks = connection.execute(query, parameters).fetchall()
+        return jsonify(tasks=[
+            {
+                "recordId": task["id"],
+                "trialNo": task["trial_no"],
+                "projectName": task["project_name"],
+                "recordManager": task["manager"],
+                "stageName": task["stage_name"],
+                "assigneeUserId": task["assignee_user_id"],
+                "assigneeName": task["assignee_name"],
+                "updatedAt": task["updated_at"],
+                "isAssignedToMe": task["assignee_user_id"] == g.user["id"],
+            }
+            for task in tasks
+        ])
 
     @app.post("/api/records/<int:record_id>/workflow/start")
     @require_login
     @require_csrf
     def start_record_workflow(record_id):
-        try:
-            with closing(connect_db()) as connection, connection:
-                connection.execute("BEGIN IMMEDIATE")
-                record = connection.execute(
-                    "SELECT trial_no, project_name FROM records WHERE id = ?", (record_id,)
-                ).fetchone()
-                if not record:
-                    abort(404)
-                workflow = latest_workflow(connection, record_id)
-                if not workflow or workflow["status"] != "draft":
-                    return jsonify(error="開始できる保存済みの回覧フローがありません。"), 409
-                step = connection.execute(
-                    "SELECT * FROM workflow_steps WHERE workflow_id = ? AND step_order = 0",
-                    (workflow["id"],),
-                ).fetchone()
-                send_workflow_notification(record, step, record_id)
-                connection.execute(
-                    "UPDATE workflow_steps SET status = 'active', notified_at = CURRENT_TIMESTAMP WHERE id = ?",
-                    (step["id"],),
-                )
-                connection.execute(
-                    "UPDATE record_workflows SET status = 'active', current_step = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                    (workflow["id"],),
-                )
-                connection.execute(
-                    "INSERT INTO workflow_events (workflow_id, action, actor) VALUES (?, 'started', ?)",
-                    (workflow["id"], session["username"]),
-                )
-        except RuntimeError as error:
-            return jsonify(error=str(error)), 503
+        with closing(connect_db()) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            record = connection.execute(
+                "SELECT id FROM records WHERE id = ?", (record_id,)
+            ).fetchone()
+            if not record:
+                abort(404)
+            workflow = latest_workflow(connection, record_id)
+            if not workflow or workflow["status"] != "draft":
+                return jsonify(error="開始できる保存済みの回覧フローがありません。"), 409
+            step = connection.execute(
+                "SELECT * FROM workflow_steps WHERE workflow_id = ? AND step_order = 0",
+                (workflow["id"],),
+            ).fetchone()
+            connection.execute(
+                "UPDATE workflow_steps SET status = 'active' WHERE id = ?",
+                (step["id"],),
+            )
+            connection.execute(
+                "UPDATE record_workflows SET status = 'active', current_step = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (workflow["id"],),
+            )
+            connection.execute(
+                "INSERT INTO workflow_events (workflow_id, action, actor) VALUES (?, 'started', ?)",
+                (workflow["id"], session["display_name"]),
+            )
         return jsonify(success=True)
 
     @app.post("/api/records/<int:record_id>/workflow/advance")
     @require_login
     @require_csrf
     def advance_record_workflow(record_id):
-        try:
-            with closing(connect_db()) as connection, connection:
-                connection.execute("BEGIN IMMEDIATE")
-                record = connection.execute(
-                    "SELECT trial_no, project_name FROM records WHERE id = ?", (record_id,)
-                ).fetchone()
-                if not record:
-                    abort(404)
-                workflow = latest_workflow(connection, record_id)
-                if not workflow or workflow["status"] != "active":
-                    return jsonify(error="進行中の回覧フローがありません。"), 409
-                current = connection.execute(
-                    "SELECT * FROM workflow_steps WHERE workflow_id = ? AND step_order = ?",
-                    (workflow["id"], workflow["current_step"]),
-                ).fetchone()
-                following = connection.execute(
-                    "SELECT * FROM workflow_steps WHERE workflow_id = ? AND step_order = ?",
-                    (workflow["id"], workflow["current_step"] + 1),
-                ).fetchone()
-                if following:
-                    send_workflow_notification(record, following, record_id)
-                    connection.execute(
-                        "UPDATE workflow_steps SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ?",
-                        (current["id"],),
-                    )
-                    connection.execute(
-                        "UPDATE workflow_steps SET status = 'active', notified_at = CURRENT_TIMESTAMP WHERE id = ?",
-                        (following["id"],),
-                    )
-                    connection.execute(
-                        "UPDATE record_workflows SET current_step = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                        (workflow["current_step"] + 1, workflow["id"]),
-                    )
-                    action = "forwarded"
-                else:
-                    connection.execute(
-                        "UPDATE workflow_steps SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ?",
-                        (current["id"],),
-                    )
-                    connection.execute(
-                        "UPDATE record_workflows SET status = 'completed', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                        (workflow["id"],),
-                    )
-                    action = "completed"
+        with closing(connect_db()) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if not connection.execute(
+                "SELECT id FROM records WHERE id = ?", (record_id,)
+            ).fetchone():
+                abort(404)
+            workflow = latest_workflow(connection, record_id)
+            if not workflow or workflow["status"] != "active":
+                return jsonify(error="進行中の回覧フローがありません。"), 409
+            current = connection.execute(
+                "SELECT * FROM workflow_steps WHERE workflow_id = ? AND step_order = ?",
+                (workflow["id"], workflow["current_step"]),
+            ).fetchone()
+            if (
+                current["assignee_user_id"] != g.user["id"]
+                and g.user["role"] != "admin"
+            ):
+                return jsonify(error="現在の担当者または管理者だけが回覧を進められます。"), 403
+            following = connection.execute(
+                "SELECT * FROM workflow_steps WHERE workflow_id = ? AND step_order = ?",
+                (workflow["id"], workflow["current_step"] + 1),
+            ).fetchone()
+            if following:
                 connection.execute(
-                    "INSERT INTO workflow_events (workflow_id, action, actor) VALUES (?, ?, ?)",
-                    (workflow["id"], action, session["username"]),
+                    "UPDATE workflow_steps SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (current["id"],),
                 )
-        except RuntimeError as error:
-            return jsonify(error=str(error)), 503
+                connection.execute(
+                    "UPDATE workflow_steps SET status = 'active' WHERE id = ?",
+                    (following["id"],),
+                )
+                connection.execute(
+                    "UPDATE record_workflows SET current_step = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (workflow["current_step"] + 1, workflow["id"]),
+                )
+                action = "forwarded"
+            else:
+                connection.execute(
+                    "UPDATE workflow_steps SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (current["id"],),
+                )
+                connection.execute(
+                    "UPDATE record_workflows SET status = 'completed', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (workflow["id"],),
+                )
+                action = "completed"
+            connection.execute(
+                "INSERT INTO workflow_events (workflow_id, action, actor) VALUES (?, ?, ?)",
+                (workflow["id"], action, session["display_name"]),
+            )
         return jsonify(success=True)
 
     @app.put("/api/records/<int:record_id>/details")
@@ -2395,16 +2618,23 @@ def create_app(test_config=None):
 # サーバー起動時の事前チェック。
 # 必須の環境変数がない、またはパスワードハッシュが不正なら起動しない。
 def main():
-    required = ("LEDGER_SECRET_KEY", "LEDGER_USERNAME", "LEDGER_PASSWORD_HASH")
+    required = ("LEDGER_SECRET_KEY",)
     missing = [name for name in required if not os.environ.get(name)]
     if missing:
         raise SystemExit("必須の環境変数が設定されていません: " + ", ".join(missing))
     if len(os.environ["LEDGER_SECRET_KEY"]) < 32:
         raise SystemExit("LEDGER_SECRET_KEYは32文字以上のランダムな値を設定してください。")
-    try:
-        check_password_hash(os.environ["LEDGER_PASSWORD_HASH"], "startup-validation")
-    except (TypeError, ValueError):
-        raise SystemExit("LEDGER_PASSWORD_HASHが無効です。READMEの手順で生成してください。") from None
+    username = os.environ.get("LEDGER_USERNAME")
+    password_hash = os.environ.get("LEDGER_PASSWORD_HASH")
+    if bool(username) != bool(password_hash):
+        raise SystemExit(
+            "初回管理者を作成する場合はLEDGER_USERNAMEとLEDGER_PASSWORD_HASHの両方を設定してください。"
+        )
+    if password_hash:
+        try:
+            check_password_hash(password_hash, "startup-validation")
+        except (TypeError, ValueError):
+            raise SystemExit("LEDGER_PASSWORD_HASHが無効です。READMEの手順で生成してください。") from None
     app = create_app()
     host = os.environ.get("LEDGER_HOST", "127.0.0.1")
     port = int(os.environ.get("LEDGER_PORT", "8000"))

@@ -16,15 +16,33 @@ try {
         throw "Failed to generate the secret key."
     }
 
-    $passwordHash = & $python -c "from getpass import getpass; from werkzeug.security import generate_password_hash; print(generate_password_hash(getpass()))"
-    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($passwordHash)) {
-        throw "Failed to generate the password hash. Check that requirements.txt is installed."
+    $databasePath = if ($env:LEDGER_DATABASE_PATH) {
+        $env:LEDGER_DATABASE_PATH
+    } else {
+        Join-Path $PSScriptRoot "instance\trial-ledger.sqlite3"
     }
 
     $env:LEDGER_SECRET_KEY = $secretKey.Trim()
-    $env:LEDGER_USERNAME = $Username
-    $env:LEDGER_PASSWORD_HASH = $passwordHash.Trim()
     $env:LEDGER_COOKIE_SECURE = "0"
+
+    $hasUsers = "0"
+    if (Test-Path -LiteralPath $databasePath -PathType Leaf) {
+        $hasUsers = & $python -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); t=c.execute('SELECT 1 FROM sqlite_master WHERE type=? AND name=?', ('table','users')).fetchone(); print('1' if t and c.execute('SELECT 1 FROM users LIMIT 1').fetchone() else '0'); c.close()" $databasePath
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to check the user database."
+        }
+    }
+
+    if ($hasUsers.Trim() -ne "1") {
+        $passwordHash = & $python -c "from getpass import getpass; from werkzeug.security import generate_password_hash; print(generate_password_hash(getpass('Initial administrator password: ')))"
+        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($passwordHash)) {
+            throw "Failed to generate the initial administrator password hash. Check that requirements.txt is installed."
+        }
+        $env:LEDGER_USERNAME = $Username
+        $env:LEDGER_PASSWORD_HASH = $passwordHash.Trim()
+    } else {
+        Remove-Item Env:LEDGER_USERNAME, Env:LEDGER_PASSWORD_HASH -ErrorAction SilentlyContinue
+    }
 
     & $python -m backend.app
     if ($LASTEXITCODE -ne 0) {

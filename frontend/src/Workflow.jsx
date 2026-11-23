@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 
 const INITIAL_STEPS = [
-  { stageName: '担当', assigneeName: '', assigneeEmail: '' },
-  { stageName: '調査', assigneeName: '', assigneeEmail: '' },
+  { stageName: '担当', assigneeUserId: '' },
+  { stageName: '調査', assigneeUserId: '' },
 ];
 
 const STAGE_NAMES = ['担当', '調査', '承認'];
@@ -17,11 +17,11 @@ const STATUS_LABELS = {
 const EVENT_LABELS = {
   configured: 'フローを保存',
   started: '回覧を開始',
-  forwarded: '次の担当者へ回覧',
+  forwarded: '次の担当者へ引き継ぎ',
   completed: '回覧を完了',
 };
 
-export default function Workflow({ record, managerChoices, managerEmails = {}, active, csrfToken, request, setAuthenticated, setLoginError }) {
+export default function Workflow({ record, workflowUsers, active, csrfToken, request, setAuthenticated, setLoginError }) {
   const [workflow, setWorkflow] = useState(null);
   const [steps, setSteps] = useState(INITIAL_STEPS.map((step, index) => ({ ...step, key: `initial-${index}` })));
   const [loading, setLoading] = useState(true);
@@ -98,10 +98,9 @@ export default function Workflow({ record, managerChoices, managerEmails = {}, a
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        steps: steps.map(({ stageName, assigneeName, assigneeEmail }) => ({
+        steps: steps.map(({ stageName, assigneeUserId }) => ({
           stageName,
-          assigneeName,
-          assigneeEmail,
+          assigneeUserId: Number(assigneeUserId),
         })),
       }),
     });
@@ -112,20 +111,6 @@ export default function Workflow({ record, managerChoices, managerEmails = {}, a
     setSteps((current) => current.map((step, stepIndex) => (
       stepIndex === index ? { ...step, [field]: value } : step
     )));
-  }
-
-  function selectAssignee(index, assigneeName) {
-    setStepsDirty(true);
-    setSteps((current) => current.map((step, stepIndex) => {
-      if (stepIndex !== index) return step;
-      const configuredEmail = managerEmails[assigneeName] || '';
-      return {
-        ...step,
-        assigneeName,
-        assigneeEmail: configuredEmail
-          || (step.assigneeName === assigneeName ? step.assigneeEmail : ''),
-      };
-    }));
   }
 
   function moveStep(index, offset) {
@@ -145,7 +130,7 @@ export default function Workflow({ record, managerChoices, managerEmails = {}, a
     setStepsDirty(true);
     setSteps((current) => [
       ...current,
-      { key: `new-${stepSequence.current}`, stageName: '', assigneeName: '', assigneeEmail: '' },
+      { key: `new-${stepSequence.current}`, stageName: '', assigneeUserId: '' },
     ]);
   }
 
@@ -153,16 +138,17 @@ export default function Workflow({ record, managerChoices, managerEmails = {}, a
 
   const editable = workflow?.status !== 'active';
   const currentStep = workflow?.steps[workflow.currentStep];
-  const availableManagers = managerChoices || [];
+  const availableUsers = workflowUsers || [];
 
   return (
     <section className="workflow-panel" aria-labelledby="workflow-title">
       <h2 id="workflow-title">回覧フロー</h2>
-      <p className="field-help">段階・担当者・メールアドレスを設定して保存し、回覧を開始すると最初の担当者へメールを送信します。</p>
+      <p className="field-help">担当者のアカウントを選択して保存し、回覧を開始すると担当者の「回覧タスク」に表示されます。</p>
       {workflow && (
         <p className={`workflow-status workflow-status--${workflow.status}`}>
           状態：{STATUS_LABELS[workflow.status]}
           {currentStep && ` ／ 現在の担当：${currentStep.assigneeName}（${currentStep.stageName}）`}
+          {workflow.isAdminOverride && ' ／ 管理者として代理操作できます'}
         </p>
       )}
       <form onSubmit={saveWorkflow}>
@@ -197,31 +183,15 @@ export default function Workflow({ record, managerChoices, managerEmails = {}, a
                   <span>担当者</span>
                   <select
                     required
-                    value={step.assigneeName}
-                    disabled={!editable || pending || !availableManagers.length}
-                    onChange={(event) => selectAssignee(index, event.target.value)}
+                    value={step.assigneeUserId ?? ''}
+                    disabled={!editable || pending || !availableUsers.length}
+                    onChange={(event) => updateStep(index, 'assigneeUserId', event.target.value)}
                   >
                     <option value="" disabled>
-                      {availableManagers.length ? '担当者を選択' : '担当者候補がありません'}
+                      {availableUsers.length ? '担当者を選択' : '担当者アカウントがありません'}
                     </option>
-                    {step.assigneeName && !availableManagers.includes(step.assigneeName) && (
-                      <option value={step.assigneeName}>{step.assigneeName}</option>
-                    )}
-                    {availableManagers.map((manager) => <option key={manager} value={manager}>{manager}</option>)}
+                    {availableUsers.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}
                   </select>
-                </label>
-                <label className="field">
-                  <span>メールアドレス</span>
-                  <input
-                    type="email"
-                    maxLength="254"
-                    required
-                    value={step.assigneeEmail}
-                    disabled={!editable || pending}
-                    onChange={(event) => updateStep(index, 'assigneeEmail', event.target.value)}
-                    placeholder="name@example.com"
-                  />
-                  <small className="field-help">managerChoicesのemailから自動入力できます。未設定の場合はここで入力してください。</small>
                 </label>
               </div>
               {editable && (
@@ -247,7 +217,7 @@ export default function Workflow({ record, managerChoices, managerEmails = {}, a
                 className="primary-button"
                 disabled={pending || stepsDirty}
                 onClick={() => submitAction(`/api/records/${record.id}/workflow/start`, { method: 'POST' })}
-              >{pending ? '処理中...' : '回覧を開始して担当者へ通知'}</button>
+              >{pending ? '処理中...' : '回覧を開始'}</button>
             )}
             {workflow?.status === 'completed' && (
               <button
@@ -264,15 +234,18 @@ export default function Workflow({ record, managerChoices, managerEmails = {}, a
           </div>
         )}
       </form>
-      {workflow?.status === 'active' && (
+      {workflow?.status === 'active' && workflow.canAdvance && (
         <div className="button-row workflow-actions">
           <button
             type="button"
             className="primary-button"
             disabled={pending}
             onClick={() => submitAction(`/api/records/${record.id}/workflow/advance`, { method: 'POST' })}
-          >{pending ? '処理中...' : currentStep && workflow.currentStep < workflow.steps.length - 1 ? '完了して次の担当者へ通知' : '回覧を完了'}</button>
+          >{pending ? '処理中...' : currentStep && workflow.currentStep < workflow.steps.length - 1 ? '完了して次の担当者へ' : '回覧を完了'}</button>
         </div>
+      )}
+      {workflow?.status === 'active' && !workflow.canAdvance && (
+        <p className="field-help">現在の担当者の対応待ちです。</p>
       )}
       {workflow?.events?.length > 0 && (
         <section className="workflow-history" aria-labelledby="workflow-history-title">

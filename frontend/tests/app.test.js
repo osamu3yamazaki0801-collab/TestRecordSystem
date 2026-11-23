@@ -161,14 +161,24 @@ async function submitForm(dom) {
   });
 }
 
-function makeSearchFetch(calls, createResponse, dashboardSummary) {
+function makeSearchFetch(calls, createResponse, dashboardSummary, workflowTasks = []) {
   let nextTrialNumber = 0;
   return async (url, options = {}) => {
     const parsedUrl = new URL(url, 'http://localhost');
     const method = options.method || 'GET';
     calls.push({ path: `${parsedUrl.pathname}${parsedUrl.search}`, method, body: options.body });
     if (parsedUrl.pathname === '/api/session') {
-      return response({ authenticated: true, username: 'operator', csrfToken: 'test-token' });
+      return response({ authenticated: true, userId: 1, username: 'operator', displayName: 'operator', role: 'admin', csrfToken: 'test-token' });
+    }
+    if (parsedUrl.pathname === '/api/workflow-users') {
+      return response({ users: [{ id: 2, name: '山田太郎' }] });
+    }
+    if (parsedUrl.pathname === '/api/workflow-inbox') return response({ tasks: workflowTasks });
+    if (parsedUrl.pathname === '/api/admin/users' && method === 'GET') {
+      return response({ users: [], managerChoices: ['山田太郎'] });
+    }
+    if (parsedUrl.pathname === '/api/admin/users' && method === 'POST') {
+      return response({ id: 2, username: 'staff-one', managerName: '山田太郎' }, 201);
     }
     if (parsedUrl.pathname === '/api/equipment-config') {
       return response({ managerChoices: ['山田太郎'], instrumentChoices: [] });
@@ -213,6 +223,59 @@ test('the dashboard provides registration and search buttons side by side', asyn
 
     await click(app.dom, buttons[1]);
     assert.ok(findNav(app.dom, '記録の検索').classList.contains('active'));
+  } finally {
+    await app.cleanup();
+  }
+});
+
+test('the in-app workflow inbox shows tasks assigned to the signed-in user', async () => {
+  const task = {
+    recordId: 42,
+    trialNo: '26110042',
+    projectName: '案件',
+    stageName: '調査',
+    assigneeName: '山田太郎',
+    isAssignedToMe: true,
+  };
+  const app = await mountApp(
+    'http://localhost/',
+    makeSearchFetch([], () => ({}), undefined, [task]),
+  );
+  try {
+    await click(app.dom, findNav(app.dom, '回覧タスク'));
+    await waitFor(() => app.dom.window.document.querySelector('.workflow-inbox tbody tr'), 'workflow task was not shown');
+    const row = app.dom.window.document.querySelector('.workflow-inbox tbody tr');
+    assert.ok(row.textContent.includes(task.trialNo));
+    assert.ok(row.textContent.includes(task.stageName));
+    assert.ok(row.textContent.includes('（自分）'));
+  } finally {
+    await app.cleanup();
+  }
+});
+
+test('the administrator can create a manager account from user management', async () => {
+  const calls = [];
+  const app = await mountApp('http://localhost/', makeSearchFetch(calls, () => ({})));
+  try {
+    await click(app.dom, findNav(app.dom, 'ユーザー管理'));
+    await waitFor(() => app.dom.window.document.querySelector('.user-create-form'), 'user management form was not shown');
+    const form = app.dom.window.document.querySelector('.user-create-form');
+    await enterText(app.dom, form.querySelector('input[type="text"]'), 'staff-one');
+    await selectValue(app.dom, form.querySelector('select'), '山田太郎');
+    await enterText(app.dom, form.querySelector('input[type="password"]'), 'safe individual password');
+    await click(app.dom, form.querySelector('button[type="submit"]'));
+
+    await waitFor(
+      () => calls.some((call) => call.path === '/api/admin/users' && call.method === 'POST'),
+      'account creation request was not sent',
+    );
+    const createCall = calls.find((call) => call.path === '/api/admin/users' && call.method === 'POST');
+    assert.deepEqual(JSON.parse(createCall.body), {
+      username: 'staff-one',
+      managerName: '山田太郎',
+      password: 'safe individual password',
+    });
+    await waitFor(() => app.dom.window.document.body.textContent.includes('アカウントを作成しました。'), 'account success message was not shown');
   } finally {
     await app.cleanup();
   }
@@ -507,6 +570,7 @@ test('opening a CSV record selects the trial results tab and renders imported da
   const fetchMock = async (url) => {
     const { pathname } = new URL(url, 'http://localhost');
     if (pathname === '/api/session') return response({ authenticated: true, username: 'operator', csrfToken: 'test-token' });
+    if (pathname === '/api/workflow-users') return response({ users: [] });
     if (pathname === '/api/records') return response([record]);
     if (pathname === '/api/records/17/equipment') return response(equipment);
     if (pathname === '/api/records/17/appearance-checks') return response(appearanceInspection());
@@ -730,6 +794,7 @@ test('power board PDF reports upload and preview at the end of the pre-test chec
     const method = options.method || 'GET';
     calls.push({ path: parsedUrl.pathname, method, body: options.body });
     if (parsedUrl.pathname === '/api/session') return response({ authenticated: true, username: 'operator', csrfToken: 'test-token' });
+    if (parsedUrl.pathname === '/api/workflow-users') return response({ users: [] });
     if (parsedUrl.pathname === '/api/records') return response([record]);
     if (parsedUrl.pathname === '/api/records/18/equipment') return response(equipment);
     if (parsedUrl.pathname === '/api/records/18/appearance-checks') return response(appearanceInspection());
@@ -787,7 +852,7 @@ test('power board PDF reports upload and preview at the end of the pre-test chec
   }
 });
 
-test('shipping inspection saves independently and workflow assignees use the manager list', async () => {
+test('shipping inspection saves independently and workflow assignees use individual accounts', async () => {
   const record = {
     id: 20, trialNo: 'T-020', projectName: '案件', productNo: 'A20',
     registrationDate: '20261114', manager: '山田太郎', files: [],
@@ -807,11 +872,13 @@ test('shipping inspection saves independently and workflow assignees use the man
   let failSave = true;
   const fetchMock = async (url, options = {}) => {
     const { pathname } = new URL(url, 'http://localhost');
-    if (pathname === '/api/session') return response({ authenticated: true, username: 'operator', csrfToken: 'test-token' });
+    if (pathname === '/api/session') return response({
+      authenticated: true, userId: 1, username: 'operator', displayName: 'operator', role: 'admin', csrfToken: 'test-token',
+    });
     if (pathname === '/api/records') return response([record]);
+    if (pathname === '/api/workflow-users') return response({ users: [{ id: 2, name: '山田太郎' }] });
     if (pathname === '/api/equipment-config') return response({
       managerChoices: ['山田太郎'],
-      managerEmails: { 山田太郎: 'yamada@example.jp' },
       instrumentChoices: [],
     });
     if (pathname === '/api/records/20/equipment') return response(equipment);
@@ -924,13 +991,10 @@ test('shipping inspection saves independently and workflow assignees use the man
       ['', '担当', '調査', '承認'],
     ]);
     assert.ok(assigneeSelects.every((select) => (
-      [...select.options].some((option) => option.value === '山田太郎')
+      [...select.options].some((option) => option.value === '2' && option.textContent === '山田太郎')
     )));
-    await selectValue(app.dom, assigneeSelects[0], '山田太郎');
-    assert.equal(
-      document.querySelector('#record-detail-panel-4 input[type="email"]').value,
-      'yamada@example.jp',
-    );
+    await selectValue(app.dom, assigneeSelects[0], '2');
+    assert.equal(document.querySelector('#record-detail-panel-4 input[type="email"]'), null);
   } finally {
     await app.cleanup();
   }
@@ -967,6 +1031,7 @@ test('appearance inspection checks cancel, save and retain input on failure with
   const fetchMock = async (url, options = {}) => {
     const { pathname } = new URL(url, 'http://localhost');
     if (pathname === '/api/session') return response({ authenticated: true, username: 'operator', csrfToken: 'test-token' });
+    if (pathname === '/api/workflow-users') return response({ users: [] });
     if (pathname === '/api/records') return response([record]);
     if (pathname === '/api/records/19/equipment') return response(equipment);
     if (pathname === '/api/records/19/jumpers') return response([{ name: 'W1', setting: '1-2', confirmed: false }]);

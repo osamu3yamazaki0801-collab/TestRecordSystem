@@ -17,6 +17,7 @@ from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.security import check_password_hash, generate_password_hash
 from waitress import serve
 from backend.trial_results import parse_trial_results_file
+from backend.graph_mail import send_workflow_advancement_email
 
 
 # ファイル単体と1回の登録で送信できるファイル合計の上限は、それぞれ100MB。
@@ -2055,6 +2056,14 @@ def create_app(test_config=None):
                 "SELECT * FROM workflow_steps WHERE workflow_id = ? AND step_order = ?",
                 (workflow["id"], workflow["current_step"] + 1),
             ).fetchone()
+            
+            # メール送信用のデータを準備
+            record = connection.execute(
+                "SELECT trial_no, project_name FROM records WHERE id = ?", (record_id,)
+            ).fetchone()
+            current_manager = current["assignee_name"]
+            stage_name = current["stage_name"]
+            
             if following:
                 connection.execute(
                     "UPDATE workflow_steps SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ?",
@@ -2069,6 +2078,36 @@ def create_app(test_config=None):
                     (workflow["current_step"] + 1, workflow["id"]),
                 )
                 action = "forwarded"
+                
+                # メール送信: 次の担当者にメールを送信
+                next_assignee = connection.execute(
+                    "SELECT username, manager_name FROM users WHERE id = ?",
+                    (following["assignee_user_id"],),
+                ).fetchone()
+                
+                if next_assignee:
+                    # equipment-config.json から次の担当者のメールアドレスを取得
+                    with open(app.config["EQUIPMENT_CONFIG_PATH"], encoding="utf-8") as f:
+                        config = json.load(f)
+                    
+                    next_email = None
+                    for manager in config.get("managerChoices", []):
+                        # manager は辞書または文字列（旧形式）の場合がある
+                        manager_name = manager.get("name") if isinstance(manager, dict) else manager
+                        if manager_name == next_assignee["manager_name"]:
+                            next_email = manager.get("email") if isinstance(manager, dict) else None
+                            break
+                    
+                    if next_email:
+                        send_workflow_advancement_email(
+                            recipient_email=next_email,
+                            recipient_name=next_assignee["manager_name"],
+                            record_id=record_id,
+                            trial_no=record["trial_no"],
+                            project_name=record["project_name"],
+                            stage_name=following["stage_name"],
+                            current_manager=current_manager,
+                        )
             else:
                 connection.execute(
                     "UPDATE workflow_steps SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ?",

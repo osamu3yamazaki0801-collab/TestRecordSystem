@@ -15,15 +15,15 @@
     "JSONでは//や/* ... */のコメントは使えません。要素を無効にする場合はコメントアウトせず削除してください。"
   ],
   "managerChoices": [
-    { "name": "吉田", "email": "" },
-    { "name": "早坂", "email": "" },
-    { "name": "大嵜", "email": "" },
-    { "name": "松井", "email": "" },
-    { "name": "村山", "email": "" },
-    { "name": "三島", "email": "" },
-    { "name": "若林", "email": "" },
-    { "name": "中島", "email": "" },
-    { "name": "五島", "email": "" },
+    { "name": "吉田", "email": "yuuto.yoshida.f65@mail.toshiba" },
+    { "name": "早坂", "email": "hiroaki.hayasaka@toshiba.co.jp" },
+    { "name": "大嵜", "email": "yuuichi.oosaki.n36@mail.toshiba" },
+    { "name": "松井", "email": "miki.matsui.r94@mail.toshiba" },
+    { "name": "村山", "email": "tomozo.murayama@toshiba.co.jp" },
+    { "name": "三島", "email": "yasuyuki.mishima.r20@mail.toshiba" },
+    { "name": "若林", "email": "naoyuki.wakabayashi.v37@mail.toshiba" },
+    { "name": "中島", "email": "norikazu.nakajima.k58@mail.toshiba" },
+    { "name": "五島", "email": "shogo.goto.h12@mail.toshiba" },
     { "name": "山崎", "email": "osamu.yamazaki.r30@mail.toshiba" }
   ],
   "boards": [

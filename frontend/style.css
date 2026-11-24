@@ -2371,3 +2371,31 @@ tbody tr:last-child td {
     grid-template-columns: 1fr;
   }
 }
+
+.password-input-control {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.password-toggle-button {
+  padding: 6px 12px;
+  font-size: 0.875rem;
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--text);
+  transition: background-color 0.2s;
+}
+
+.password-toggle-button:hover {
+  background: var(--accent);
+  color: white;
+}
+
+.password-toggle-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

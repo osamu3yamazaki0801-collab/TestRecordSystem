@@ -3,6 +3,7 @@ import TrialResults from './TrialResults';
 import Workflow from './Workflow';
 import WorkflowInbox from './WorkflowInbox';
 import UserManagement from './UserManagement';
+import PasswordChange from './PasswordChange';
 
 // 添付ファイルの最大サイズは 100MB。
 // 画面遷移ごとの見出し文言と検索条件の初期値をまとめて管理する。
@@ -48,6 +49,10 @@ const SECTION_DETAILS = {
   userManagementSection: {
     title: 'ユーザー管理',
     description: '担当者アカウントを作成・管理します。',
+  },
+  passwordChangeSection: {
+    title: 'パスワード変更',
+    description: '自分のパスワードを変更します。',
   },
 };
 const EMPTY_FILTERS = {
@@ -1022,6 +1027,7 @@ function App() {
           <NavLink target="searchSection" section={section} onNavigate={navigateTo} icon="⌕">記録の検索</NavLink>
           <NavLink target="workflowInboxSection" section={section} onNavigate={navigateTo} icon="↪">回覧タスク</NavLink>
           {isAdmin && <NavLink target="userManagementSection" section={section} onNavigate={navigateTo} icon="♙">ユーザー管理</NavLink>}
+          <NavLink target="passwordChangeSection" section={section} onNavigate={navigateTo} icon="🔑">パスワード変更</NavLink>
         </nav>
 
         <div className="sidebar-bottom">
@@ -1192,6 +1198,10 @@ function App() {
             setAuthenticated={setAuthenticated}
             setLoginError={setLoginError}
           />
+        )}
+
+        {section === 'passwordChangeSection' && (
+          <PasswordChange />
         )}
       </main>
     </div>

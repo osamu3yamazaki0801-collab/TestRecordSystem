@@ -2472,6 +2472,76 @@ class LedgerAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 413)
         self.assertEqual(self.client.get("/api/records").json, [])
 
+    def test_password_minimum_is_eight_characters_except_for_admins(self):
+        self.login()
+        
+        # Regular user should require 8 characters minimum
+        response = self.client.post(
+            "/api/admin/users",
+            json={"username": "user-short-pwd", "managerName": "担当者", "password": "short"},
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("8", response.json["error"])
+        
+        # Regular user should accept 8+ characters
+        response = self.client.post(
+            "/api/admin/users",
+            json={"username": "user-long-pwd", "managerName": "担当者", "password": "12345678"},
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(response.status_code, 201)
+        user_id = response.json["id"]
+        
+        # Update with short password should fail
+        response = self.client.put(
+            f"/api/admin/users/{user_id}",
+            json={"password": "short"},
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("8", response.json["error"])
+
+    def test_users_can_change_their_own_password_with_current_password(self):
+        self.login()
+        user = self.create_user("user-pwd-change", "担当者", "initial8char")
+        
+        # Login as the user
+        user_client = self.app.test_client()
+        user_csrf = self.login_client(user_client, "user-pwd-change", "initial8char")
+        
+        # Change password with correct current password
+        response = user_client.put(
+            "/api/account/password",
+            json={
+                "currentPassword": "initial8char",
+                "newPassword": "newpassword8char",
+            },
+            headers={"X-CSRF-Token": user_csrf},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json["success"])
+        
+        # Old password should not work
+        old_login = self.app.test_client()
+        old_csrf = old_login.get("/api/session").json["csrfToken"]
+        response = old_login.post(
+            "/api/login",
+            json={"username": "user-pwd-change", "password": "initial8char"},
+            headers={"X-CSRF-Token": old_csrf},
+        )
+        self.assertEqual(response.status_code, 401)
+        
+        # New password should work
+        new_login = self.app.test_client()
+        new_csrf = new_login.get("/api/session").json["csrfToken"]
+        response = new_login.post(
+            "/api/login",
+            json={"username": "user-pwd-change", "password": "newpassword8char"},
+            headers={"X-CSRF-Token": new_csrf},
+        )
+        self.assertEqual(response.status_code, 200)
+
 
 if __name__ == "__main__":
     unittest.main()

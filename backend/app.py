@@ -1145,10 +1145,10 @@ def create_app(test_config=None):
             or not isinstance(manager_name, str)
             or manager_name not in app.config["MANAGER_CHOICES"]
             or not isinstance(password, str)
-            or not 12 <= len(password) <= 256
+            or not 8 <= len(password) <= 256
         ):
             return jsonify(
-                error="ユーザーIDは半角英数字等3～50文字、担当者候補と12～256文字のパスワードを指定してください。"
+                error="ユーザーIDは半角英数字等3～50文字、担当者候補と8～256文字のパスワードを指定してください。"
             ), 400
         password_hash = generate_password_hash(password)
         with closing(connect_db()) as connection, connection:
@@ -1190,13 +1190,7 @@ def create_app(test_config=None):
             return jsonify(error="変更できないアカウント項目が含まれています。"), 400
         password = data.get("password")
         is_active = data.get("isActive")
-        if "password" in data and (
-            not isinstance(password, str) or not 12 <= len(password) <= 256
-        ):
-            return jsonify(error="パスワードは12～256文字で指定してください。"), 400
-        if "isActive" in data and type(is_active) is not bool:
-            return jsonify(error="有効状態は真偽値で指定してください。"), 400
-
+        
         with closing(connect_db()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             user = connection.execute(
@@ -1204,6 +1198,16 @@ def create_app(test_config=None):
             ).fetchone()
             if not user:
                 abort(404)
+            
+            # ロールに基づいたパスワード検証
+            if "password" in data:
+                min_length = 1 if user["role"] == "admin" else 8
+                if not isinstance(password, str) or not min_length <= len(password) <= 256:
+                    min_text = "1" if user["role"] == "admin" else "8"
+                    return jsonify(error=f"パスワードは{min_text}～256文字で指定してください。"), 400
+            
+            if "isActive" in data and type(is_active) is not bool:
+                return jsonify(error="有効状態は真偽値で指定してください。"), 400
             if "isActive" in data and not is_active:
                 if user_id == g.user["id"]:
                     return jsonify(error="ログイン中の管理者は無効化できません。"), 400
@@ -1221,6 +1225,42 @@ def create_app(test_config=None):
                     "UPDATE users SET is_active = ? WHERE id = ?",
                     (int(is_active), user_id),
                 )
+        return jsonify(success=True)
+
+    @app.put("/api/account/password")
+    @require_login
+    @require_csrf
+    def change_password():
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify(error="リクエストの形式が正しくありません。"), 400
+        
+        current_password = data.get("currentPassword")
+        new_password = data.get("newPassword")
+        
+        if not isinstance(current_password, str) or not isinstance(new_password, str):
+            return jsonify(error="現在のパスワードと新しいパスワードを指定してください。"), 400
+        
+        with closing(connect_db()) as connection:
+            user = connection.execute(
+                "SELECT password_hash, role FROM users WHERE id = ?", (g.user["id"],)
+            ).fetchone()
+            if not user or not check_password_hash(user["password_hash"], current_password):
+                return jsonify(error="現在のパスワードが正しくありません。"), 400
+            
+            # ロールに基づいたパスワード検証
+            min_length = 1 if user["role"] == "admin" else 8
+            if not min_length <= len(new_password) <= 256:
+                min_text = "1" if user["role"] == "admin" else "8"
+                return jsonify(error=f"新しいパスワードは{min_text}～256文字で指定してください。"), 400
+            
+            new_password_hash = generate_password_hash(new_password)
+            connection.execute(
+                "UPDATE users SET password_hash = ? WHERE id = ?",
+                (new_password_hash, g.user["id"]),
+            )
+            connection.commit()
+        
         return jsonify(success=True)
 
     # ダッシュボード表示に必要な件数と担当者別の月次集計を返す。

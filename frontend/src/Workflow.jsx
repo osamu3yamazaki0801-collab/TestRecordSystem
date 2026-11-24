@@ -147,7 +147,7 @@ export default function Workflow({ record, workflowUsers, active, csrfToken, req
       {workflow && (
         <p className={`workflow-status workflow-status--${workflow.status}`}>
           状態：{STATUS_LABELS[workflow.status]}
-          {currentStep && ` ／ 現在の担当：${currentStep.assigneeName}（${currentStep.stageName}）`}
+          {workflow.status === 'active' && currentStep && ` ／ 現在の担当：${currentStep.assigneeName}（${currentStep.stageName}）`}
           {workflow.isAdminOverride && ' ／ 管理者として代理操作できます'}
         </p>
       )}

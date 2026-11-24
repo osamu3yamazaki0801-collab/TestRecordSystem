@@ -7,6 +7,8 @@ export default function UserManagement({ active, csrfToken, request, setAuthenti
   const [managerName, setManagerName] = useState('');
   const [password, setPassword] = useState('');
   const [resetPasswords, setResetPasswords] = useState({});
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [showResetPasswords, setShowResetPasswords] = useState({});
   const [loading, setLoading] = useState(true);
   const [pendingUserId, setPendingUserId] = useState(null);
   const [message, setMessage] = useState({ text: '', type: '' });
@@ -108,16 +110,26 @@ export default function UserManagement({ active, csrfToken, request, setAuthenti
           </select>
         </label>
         <label className="field">
-          <span>初期パスワード（12文字以上）</span>
-          <input
-            type="password"
-            autoComplete="new-password"
-            minLength="12"
-            maxLength="256"
-            required
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-          />
+          <span>初期パスワード（8文字以上）</span>
+          <div className="password-input-control">
+            <input
+              type={showNewPassword ? "text" : "password"}
+              autoComplete="new-password"
+              minLength="8"
+              maxLength="256"
+              required
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+            />
+            <button
+              type="button"
+              className="password-toggle-button"
+              onClick={() => setShowNewPassword(!showNewPassword)}
+              aria-pressed={showNewPassword}
+            >
+              {showNewPassword ? "隠す" : "表示"}
+            </button>
+          </div>
         </label>
         <button type="submit" className="primary-button" disabled={pendingUserId === 'new' || !managerChoices.length}>
           {pendingUserId === 'new' ? '作成中...' : 'アカウントを作成'}
@@ -146,22 +158,35 @@ export default function UserManagement({ active, csrfToken, request, setAuthenti
                     <td>{user.managerName || '管理者'}</td>
                     <td>{user.role === 'admin' ? '管理者' : '担当者'}・{user.isActive ? '有効' : '無効'}</td>
                     <td>
-                      <input
-                        type="password"
-                        aria-label={`${user.username}の新しいパスワード`}
-                        autoComplete="new-password"
-                        minLength="12"
-                        maxLength="256"
-                        value={resetPassword}
-                        onChange={(event) => setResetPasswords((current) => ({
-                          ...current,
-                          [user.id]: event.target.value,
-                        }))}
-                      />
+                      <div className="password-input-control">
+                        <input
+                          type={showResetPasswords[user.id] ? "text" : "password"}
+                          aria-label={`${user.username}の新しいパスワード`}
+                          autoComplete="new-password"
+                          minLength="8"
+                          maxLength="256"
+                          value={resetPassword}
+                          onChange={(event) => setResetPasswords((current) => ({
+                            ...current,
+                            [user.id]: event.target.value,
+                          }))}
+                        />
+                        <button
+                          type="button"
+                          className="password-toggle-button"
+                          onClick={() => setShowResetPasswords((current) => ({
+                            ...current,
+                            [user.id]: !current[user.id],
+                          }))}
+                          aria-pressed={showResetPasswords[user.id] || false}
+                        >
+                          {showResetPasswords[user.id] ? "隠す" : "表示"}
+                        </button>
+                      </div>
                       <button
                         type="button"
                         className="secondary-button"
-                        disabled={pendingUserId === user.id || resetPassword.length < 12}
+                        disabled={pendingUserId === user.id || resetPassword.length < 8}
                         onClick={() => updateUser(user, { password: resetPassword }, 'パスワードを再設定しました。')}
                       >再設定</button>
                     </td>

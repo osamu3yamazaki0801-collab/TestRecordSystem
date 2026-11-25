@@ -40,7 +40,7 @@ def parse_trial_results(content):
                 stage = "temperatures"
                 continue
             if current is None:
-                if row[0] not in {"品名", "仕様書番号", "試験番号"} or len(row) != 2 or not row[1]:
+                if row[0] not in {"品名", "仕様書番号", "試験番号"} or len(row) != 2:
                     raise ValueError(f"CSVの{reader.line_num}行目の基本情報が正しくありません。")
                 if row[0] in metadata:
                     raise ValueError("CSVの基本情報が重複しています。")
@@ -55,7 +55,7 @@ def parse_trial_results(content):
                     raise ValueError(f"CSVの{reader.line_num}行目の温度見出しの列数が正しくありません。")
                 for index in range(3):
                     offset = base + index * width
-                    if not row[offset].startswith("温度") or not row[offset + 1]:
+                    if not row[offset].startswith("温度"):
                         raise ValueError(f"CSVの{reader.line_num}行目の温度情報が正しくありません。")
                     current["temperatures"].append({"label": row[offset], "value": row[offset + 1]})
                 stage = "header"
@@ -70,7 +70,7 @@ def parse_trial_results(content):
                     raise ValueError(f"CSVの{reader.line_num}行目の項目見出しが正しくありません。")
                 stage = "rows"
                 continue
-            if len(row) != expected_columns or not row[0] or not row[1]:
+            if len(row) != expected_columns:
                 raise ValueError(f"CSVの{reader.line_num}行目の試験結果の列数または項目が正しくありません。")
             result = {"no": row[0], "name": row[1], "unit": row[base - 1], "measurements": []}
             if current["number"] == 1:

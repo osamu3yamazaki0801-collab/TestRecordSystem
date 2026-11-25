@@ -1787,8 +1787,8 @@ function RecordDetails({ record, onClose, recordDirty, registering, registration
                 setLoginError={setLoginError}
                 fileActionPending={fileActionPending || reportActionPending}
                 onDeleteFile={() => deleteTrialResults(existingFiles[0])}
+                actionMessage={fileActionMessage}
               />
-              {fileActionMessage.text && <Message type={fileActionMessage.type}>{fileActionMessage.text}</Message>}
             </>
           )}
           {index === 3 && (

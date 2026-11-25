@@ -32,7 +32,7 @@ function getSectionTabName(sectionNumber) {
   return sectionNumber === 1 ? 'アナログ系' : 'デジタル系';
 }
 
-export default function TrialResults({ recordId, files, pendingFiles, csrfToken, request, setAuthenticated, setLoginError, fileActionPending, onDeleteFile }) {
+export default function TrialResults({ recordId, files, pendingFiles, csrfToken, request, setAuthenticated, setLoginError, fileActionPending, onDeleteFile, actionMessage }) {
   const [selectedKey, setSelectedKey] = useState('');
   const [parsed, setParsed] = useState(null);
   const [error, setError] = useState('');
@@ -200,6 +200,14 @@ export default function TrialResults({ recordId, files, pendingFiles, csrfToken,
           </button>
         )}
       </div>
+      {actionMessage?.text && (
+        <p
+          className={`status-text${actionMessage.type ? ` ${actionMessage.type}` : ''}`}
+          aria-live="polite"
+        >
+          {actionMessage.text}
+        </p>
+      )}
       {!data && <p className={`status-text${error ? ' error' : ''}`} aria-live="polite">{error || 'CSVを読み込み中...'}</p>}
       {data && section && (
         <>
@@ -295,7 +303,7 @@ export default function TrialResults({ recordId, files, pendingFiles, csrfToken,
                 <tbody>
                   {rows.map((row, index) => (
                     <tr key={`${row.no}-${index}`} className={getRowJudgement(row) === 'FAIL' ? 'csv-failed-row' : ''}>
-                      <th scope="row">{row.no}</th><td className="csv-test-name">{row.name}</td>
+                      <th scope="row">{row.no || '-'}</th><td className="csv-test-name">{row.name || '-'}</td>
                       {analog ? <><td>{row.lowerLimit || '-'}</td><td>{row.upperLimit || '-'}</td></> : <td>{row.specifiedValue || '-'}</td>}
                       <td>{row.unit || '-'}</td>
                       {row.measurements.map((measurement, measurementIndex) => analog ? (

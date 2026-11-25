@@ -69,6 +69,29 @@ class TrialResultsCsvTests(unittest.TestCase):
         self.assertEqual(row["judgement"], "FAIL")
         self.assertEqual(result["sections"][0]["summary"]["FAIL"], 1)
 
+    def test_csv_allows_empty_value_cells(self):
+        content = SAMPLE_RESULTS_CSV.replace("品名,PEX32RZ_SAMPLE", "品名,", 1)
+        content = content.replace("温度 1(℃),-20", "温度 1(℃),", 1)
+        content = content.replace(
+            'B5-1-01,"CPU入力, AI00",-122,122,count,-0.01,PASS,0.01,PASS,-0.01,PASS,0.01,PASS,-0.01,PASS,0.01,PASS',
+            ',,,,count,,,,,,,,,,,,',
+            1,
+        )
+
+        result = parse_trial_results(content.encode("utf-8"))
+
+        self.assertEqual(result["metadata"]["品名"], "")
+        self.assertEqual(result["sections"][0]["temperatures"][0]["value"], "")
+        first_row = result["sections"][0]["rows"][0]
+        self.assertEqual(first_row["no"], "")
+        self.assertEqual(first_row["name"], "")
+        self.assertTrue(all(
+            not measurement[field]
+            for measurement in first_row["measurements"]
+            for field in ("min", "minJudgement", "max", "maxJudgement")
+        ))
+        self.assertEqual(first_row["judgement"], "UNJUDGED")
+
     def test_csv_rejects_invalid_structure(self):
         for text in (
             "品名,サンプル\n", "not csv", SAMPLE_RESULTS_CSV.replace("No.,試験名称", "No.,その他", 1),

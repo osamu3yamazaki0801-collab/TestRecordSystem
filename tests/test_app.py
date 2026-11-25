@@ -2483,9 +2483,17 @@ class LedgerAppTests(unittest.TestCase):
         self.assertIn("合計", response.json["error"])
         self.assertEqual(self.client.get("/api/records").json, [])
 
-    def test_existing_single_file_is_migrated_to_attachments(self):
+    def test_obsolete_record_file_columns_are_removed_without_migrating_data(self):
         database_path = self.app.config["DATABASE_PATH"]
         with closing(sqlite3.connect(database_path)) as connection, connection:
+            for column_definition in (
+                "file_name TEXT",
+                "file_content_type TEXT",
+                "file_data BLOB",
+            ):
+                connection.execute(
+                    f"ALTER TABLE records ADD COLUMN {column_definition}"
+                )
             cursor = connection.execute(
                 """
                 INSERT INTO records (
@@ -2525,19 +2533,14 @@ class LedgerAppTests(unittest.TestCase):
         )
         self.assertEqual(login_response.status_code, 200)
 
-        record = client.get("/api/records").json[0]
-        self.assertEqual(record["files"][0]["fileName"], "old.txt")
-        file_id = record["files"][0]["id"]
-        self.assertEqual(
-            client.get(f"/api/records/{record_id}/files/{file_id}").data,
-            b"legacy result",
-        )
+        self.assertEqual(client.get("/api/records").json[0]["files"], [])
         with closing(sqlite3.connect(database_path)) as connection:
-            legacy_data = connection.execute(
-                "SELECT file_data FROM records WHERE id = ?",
-                (record_id,),
-            ).fetchone()[0]
-        self.assertIsNone(legacy_data)
+            record_columns = {
+                row[1] for row in connection.execute("PRAGMA table_info(records)")
+            }
+        self.assertTrue(
+            {"file_name", "file_content_type", "file_data"}.isdisjoint(record_columns)
+        )
 
     def test_rejects_oversized_attachment(self):
         self.login()

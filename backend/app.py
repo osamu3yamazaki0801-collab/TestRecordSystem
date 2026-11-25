@@ -630,9 +630,6 @@ def create_app(test_config=None):
                     product_no TEXT NOT NULL,
                     registration_date TEXT NOT NULL,
                     manager TEXT NOT NULL,
-                    file_name TEXT,
-                    file_content_type TEXT,
-                    file_data BLOB,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
                 CREATE TABLE IF NOT EXISTS users (
@@ -739,6 +736,14 @@ def create_app(test_config=None):
                 );
                 """
             )
+            record_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(records)")
+            }
+            for obsolete_column in ("file_name", "file_content_type", "file_data"):
+                if obsolete_column in record_columns:
+                    connection.execute(
+                        f"ALTER TABLE records DROP COLUMN {obsolete_column}"
+                    )
             workflow_step_columns = {
                 row["name"] for row in connection.execute("PRAGMA table_info(workflow_steps)")
             }
@@ -798,26 +803,6 @@ def create_app(test_config=None):
                         """
                     )
                 connection.execute("DROP TABLE jumper_checks_legacy")
-            # 既存DBの単一添付ファイルを新しい複数ファイル用テーブルへ移す。
-            connection.execute(
-                """
-                INSERT INTO record_files (
-                    record_id, file_name, file_content_type, file_data
-                )
-                SELECT id, COALESCE(file_name, 'trial-result'),
-                       COALESCE(file_content_type, 'application/octet-stream'),
-                       file_data
-                FROM records
-                WHERE file_data IS NOT NULL
-                """
-            )
-            connection.execute(
-                """
-                UPDATE records
-                SET file_name = NULL, file_content_type = NULL, file_data = NULL
-                WHERE file_data IS NOT NULL
-                """
-            )
             if not connection.execute("SELECT 1 FROM users LIMIT 1").fetchone():
                 username = app.config["LEDGER_USERNAME"]
                 password_hash = app.config["LEDGER_PASSWORD_HASH"]

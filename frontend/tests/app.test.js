@@ -163,6 +163,7 @@ async function submitForm(dom) {
 
 function makeSearchFetch(calls, createResponse, dashboardSummary, workflowTasks = []) {
   let nextTrialNumber = 0;
+  let managedUsers = [];
   return async (url, options = {}) => {
     const parsedUrl = new URL(url, 'http://localhost');
     const method = options.method || 'GET';
@@ -175,10 +176,25 @@ function makeSearchFetch(calls, createResponse, dashboardSummary, workflowTasks 
     }
     if (parsedUrl.pathname === '/api/workflow-inbox') return response({ tasks: workflowTasks });
     if (parsedUrl.pathname === '/api/admin/users' && method === 'GET') {
-      return response({ users: [], managerChoices: ['山田太郎'] });
+      return response({
+        users: managedUsers,
+      });
     }
     if (parsedUrl.pathname === '/api/admin/users' && method === 'POST') {
-      return response({ id: 2, username: 'staff-one', managerName: '山田太郎' }, 201);
+      const user = {
+        id: 2,
+        username: 'staff-one',
+        managerName: '山田太郎',
+        managerEmail: '',
+        role: 'user',
+        isActive: true,
+      };
+      managedUsers = [user];
+      return response(user, 201);
+    }
+    if (/^\/api\/admin\/users\/\d+$/.test(parsedUrl.pathname) && method === 'DELETE') {
+      managedUsers = [];
+      return response({ success: true });
     }
     if (parsedUrl.pathname === '/api/equipment-config') {
       return response({ managerChoices: ['山田太郎'], instrumentChoices: [] });
@@ -270,8 +286,17 @@ test('the administrator can create a manager account from user management', asyn
     await click(app.dom, findNav(app.dom, 'ユーザー管理'));
     await waitFor(() => app.dom.window.document.querySelector('.user-create-form'), 'user management form was not shown');
     const form = app.dom.window.document.querySelector('.user-create-form');
-    await enterText(app.dom, form.querySelector('input[type="text"]'), 'staff-one');
-    await selectValue(app.dom, form.querySelector('select'), '山田太郎');
+    assert.ok(form.textContent.includes('半角英数字、ピリオド（.）、アンダースコア（_）、ハイフン（-）の3～50文字'));
+    assert.ok(form.textContent.includes('日本語、半角数字、空白の30文字以内'));
+    assert.equal(form.textContent.includes('メールアドレス（任意）'), false);
+    assert.deepEqual(
+      [...app.dom.window.document.querySelectorAll('.user-management table thead th')]
+        .map((heading) => heading.textContent),
+      ['ログインID', '担当者', 'メールアドレス', 'パスワード再設定', '権限・状態', '削除'],
+    );
+    const textInputs = form.querySelectorAll('input[type="text"]');
+    await enterText(app.dom, textInputs[0], 'staff-one');
+    await enterText(app.dom, textInputs[1], '山田太郎');
     await enterText(app.dom, form.querySelector('input[type="password"]'), 'safe individual password');
     await click(app.dom, form.querySelector('button[type="submit"]'));
 
@@ -283,9 +308,22 @@ test('the administrator can create a manager account from user management', asyn
     assert.deepEqual(JSON.parse(createCall.body), {
       username: 'staff-one',
       managerName: '山田太郎',
+      managerEmail: '',
       password: 'safe individual password',
     });
     await waitFor(() => app.dom.window.document.body.textContent.includes('アカウントを作成しました。'), 'account success message was not shown');
+    app.dom.window.confirm = () => true;
+    const userDeleteButton = [...app.dom.window.document.querySelectorAll('button')]
+      .find((button) => button.textContent === '削除');
+    await click(app.dom, userDeleteButton);
+    await waitFor(
+      () => calls.some((call) => call.path === '/api/admin/users/2' && call.method === 'DELETE'),
+      'account deletion request was not sent',
+    );
+    await waitFor(
+      () => app.dom.window.document.body.textContent.includes('アカウントを削除しました。'),
+      'account deletion success message was not shown',
+    );
   } finally {
     await app.cleanup();
   }

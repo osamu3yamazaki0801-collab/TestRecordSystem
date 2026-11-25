@@ -2377,6 +2377,54 @@ tbody tr:last-child td {
   align-items: center;
 }
 
+.user-management table {
+  table-layout: fixed;
+  width: 100%;
+}
+
+.user-id-cell,
+.user-manager-cell {
+  width: 8%;
+  min-width: 0;
+  max-width: 110px;
+  overflow-wrap: anywhere;
+}
+
+.user-status-cell {
+  min-width: 180px;
+}
+
+.user-status-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.user-status-control > span {
+  white-space: nowrap;
+}
+
+.user-status-control > button {
+  white-space: nowrap;
+}
+
+.user-password-cell {
+  min-width: 260px;
+}
+
+.user-password-cell .password-input-control {
+  min-width: 0;
+}
+
+.user-password-cell > .secondary-button {
+  margin-top: 8px;
+}
+
+.user-delete-cell {
+  width: 70px;
+  text-align: center;
+}
+
 .password-toggle-button {
   padding: 6px 12px;
   font-size: 0.875rem;

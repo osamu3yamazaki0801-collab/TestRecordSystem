@@ -87,7 +87,6 @@ class LedgerAppTests(unittest.TestCase):
         equipment_config_path = Path(self.temp_dir.name) / "equipment-config.json"
         equipment_config_path.write_text(
             json.dumps({
-                "managerChoices": ["担当者", "調査者", "承認者"],
                 "jumpers": [
                     {"name": "W1", "setting": "1-2"},
                     {"name": "W2", "setting": "1-2"},
@@ -130,12 +129,19 @@ class LedgerAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         return response.json["csrfToken"]
 
-    def create_user(self, username, manager_name, password="individual test password"):
+    def create_user(
+        self,
+        username,
+        manager_name,
+        password="individual test password",
+        manager_email="",
+    ):
         response = self.client.post(
             "/api/admin/users",
             json={
                 "username": username,
                 "managerName": manager_name,
+                "managerEmail": manager_email,
                 "password": password,
             },
             headers={"X-CSRF-Token": self.csrf_token},
@@ -244,10 +250,26 @@ class LedgerAppTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 400)
 
-    def test_admin_manages_individual_accounts_linked_to_manager_choices(self):
+    def test_admin_manages_individual_accounts(self):
         self.login()
-        user = self.create_user("staff-one", "担当者")
+        user = self.create_user(
+            "staff-one",
+            "担当者",
+            manager_email="staff-one@example.com",
+        )
         self.assertEqual(self.client.get("/api/admin/users").status_code, 200)
+        self.assertEqual(
+            self.client.get("/api/equipment-config").json["managerChoices"],
+            ["担当者"],
+        )
+        self.assertEqual(
+            next(
+                item
+                for item in self.client.get("/api/admin/users").json["users"]
+                if item["id"] == user["id"]
+            )["managerEmail"],
+            "staff-one@example.com",
+        )
         assignees = self.client.get("/api/workflow-users").json["users"]
         self.assertEqual(assignees, [{"id": user["id"], "name": "担当者"}])
 
@@ -280,6 +302,73 @@ class LedgerAppTests(unittest.TestCase):
         self.assertEqual(disable.status_code, 200)
         self.assertEqual(user_client.get("/api/workflow-inbox").status_code, 401)
         self.assertEqual(new_password_login.get("/api/workflow-inbox").status_code, 401)
+
+    def test_manager_name_accepts_half_width_digits(self):
+        self.login()
+        user = self.create_user("staff-numeric", "山1")
+
+        self.assertEqual(user["managerName"], "山1")
+        response = self.client.post(
+            "/api/records",
+            data=self.record_data(trialNo="T-NUMERIC-MANAGER", manager="山1"),
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(response.status_code, 201)
+
+    def test_admin_deletes_unused_user_but_keeps_blocked_accounts(self):
+        self.login()
+        user = self.create_user("staff-delete", "担当者")
+
+        deleted = self.client.delete(
+            f"/api/admin/users/{user['id']}",
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(deleted.status_code, 200)
+        self.assertNotIn(
+            user["id"],
+            [item["id"] for item in self.client.get("/api/admin/users").json["users"]],
+        )
+        self.assertNotIn(
+            "担当者",
+            self.client.get("/api/equipment-config").json["managerChoices"],
+        )
+
+        self.assertEqual(
+            self.client.delete(
+                "/api/admin/users/1",
+                headers={"X-CSRF-Token": self.csrf_token},
+            ).status_code,
+            400,
+        )
+        active_user = self.create_user("staff-active", "調査者")
+        record_id = self.client.post(
+            "/api/records",
+            data=self.record_data(trialNo="T-WORKFLOW-USER"),
+            headers={"X-CSRF-Token": self.csrf_token},
+        ).json["id"]
+        with closing(sqlite3.connect(self.app.config["DATABASE_PATH"])) as connection, connection:
+            workflow_id = connection.execute(
+                """
+                INSERT INTO record_workflows (record_id, status, current_step, created_by)
+                VALUES (?, 'draft', 0, 'operator')
+                """,
+                (record_id,),
+            ).lastrowid
+            connection.execute(
+                """
+                INSERT INTO workflow_steps (
+                    workflow_id, step_order, stage_name, assignee_name,
+                    assignee_email, assignee_user_id, status
+                ) VALUES (?, 1, '調査', '調査者', '', ?, 'pending')
+                """,
+                (workflow_id, active_user["id"]),
+            )
+
+        blocked = self.client.delete(
+            f"/api/admin/users/{active_user['id']}",
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        self.assertEqual(blocked.status_code, 409)
 
     def test_trial_number_allocator_fills_lowest_gap_and_uses_draft_numbers(self):
         self.login()
@@ -1078,14 +1167,12 @@ class LedgerAppTests(unittest.TestCase):
         ).json["id"]
         config_path = Path(self.temp_dir.name) / "equipment-config.json"
         choices = [{"name": "カスタム試験器", "managementNo": "CUSTOM-01"}]
-        managers = ["カスタム担当者", "別の担当者"]
         boards = [
             {"name": f"CUSTOM-{index}", "serialNumber": "SERIAL"}
             for index in range(3)
         ]
         config_path.write_text(
             json.dumps({
-                "managerChoices": managers,
                 "instrumentChoices": choices,
                 "boards": boards,
             }),
@@ -1108,7 +1195,7 @@ class LedgerAppTests(unittest.TestCase):
             configured_client.get("/api/equipment-config").json,
             {
                 "instrumentChoices": choices,
-                "managerChoices": managers,
+                "managerChoices": [],
                 "manualTests": [],
                 "softwareSections": self.app.config["SOFTWARE_SECTIONS"],
             },
@@ -1117,7 +1204,20 @@ class LedgerAppTests(unittest.TestCase):
         self.assertEqual(len(equipment["instruments"]), 5)
         self.assertEqual(equipment["boards"], boards)
 
-    def test_manager_choices_ignore_email_addresses(self):
+    def test_manager_choices_come_from_active_user_accounts(self):
+        self.login()
+        self.create_user("manager-one", "山田")
+        inactive = self.create_user("manager-two", "佐藤")
+        self.client.put(
+            f"/api/admin/users/{inactive['id']}",
+            json={"isActive": False},
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+        config = self.client.get("/api/equipment-config").json
+
+        self.assertEqual(config["managerChoices"], ["山田"])
+
+    def test_equipment_config_ignores_legacy_manager_choices(self):
         config_path = Path(self.temp_dir.name) / "manager-choices.json"
         manager_choices = [
             {"name": "山田", "email": "unused legacy value"},
@@ -1137,27 +1237,7 @@ class LedgerAppTests(unittest.TestCase):
             session["username"] = "operator"
 
         config = client.get("/api/equipment-config").json
-        self.assertEqual(config["managerChoices"], ["山田", "佐藤"])
-        self.assertNotIn("managerEmails", config)
-
-    def test_equipment_config_rejects_invalid_manager_choices(self):
-        config_path = Path(self.temp_dir.name) / "invalid-manager-choices.json"
-        for managers in (
-            ["担当者", "担当者"],
-            ["operator"],
-            ["名" * 31],
-            [{"email": "担当者"}],
-        ):
-            with self.subTest(managers=managers):
-                config_path.write_text(
-                    json.dumps({"managerChoices": managers}), encoding="utf-8",
-                )
-                with self.assertRaisesRegex(ValueError, "managerChoices"):
-                    create_app({
-                        "TESTING": True,
-                        "EQUIPMENT_CONFIG_PATH": str(config_path),
-                        "DATABASE_PATH": str(Path(self.temp_dir.name) / "invalid-managers.sqlite3"),
-                    })
+        self.assertEqual(config["managerChoices"], [])
 
     def test_equipment_config_rejects_more_than_fifty_boards(self):
         config_path = Path(self.temp_dir.name) / "too-many-boards.json"

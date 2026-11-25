@@ -11,20 +11,8 @@
     "valuesの空文字は基準値なしのチェック欄です。基板名を省略すると対象外の「-」になります。keyは英字で始まる半角英数字・_・-の50文字以内、名前・基準値は各100文字以内です。itemsを空配列にすると確認項目は表示されません。",
     "外観確認のkeyは保存結果の識別に使うため、並べ替えや表示行数の変更時は維持してください。項目名・基準値が変わったセルは未確認になります。設定変更後はサーバーを再起動してください。",
     "manualTestsで試験結果タブ先頭の手動試験を設定します。各試験に一意なkey・number・name・areaとitems配列を指定し、各測定項目に一意なkey・name・lowerLimit・upperLimit・unit・benchLockを指定します。lowerLimitからupperLimitまでを正常範囲として判定します。",
-    "managerChoices配列にnameとemailを設定すると、担当者候補に表示され、回覧の担当者選択時にemailが自動入力されます。emailは空欄にもできます。旧形式の担当者名文字列も利用できます。",
+    "担当者名とメールアドレスは管理者のユーザー管理画面で登録します。",
     "JSONでは//や/* ... */のコメントは使えません。要素を無効にする場合はコメントアウトせず削除してください。"
-  ],
-  "managerChoices": [
-    { "name": "吉田", "email": "yuuto.yoshida.f65@mail.toshiba" },
-    { "name": "早坂", "email": "hiroaki.hayasaka@toshiba.co.jp" },
-    { "name": "大嵜", "email": "yuuichi.oosaki.n36@mail.toshiba" },
-    { "name": "松井", "email": "miki.matsui.r94@mail.toshiba" },
-    { "name": "村山", "email": "tomozo.murayama@toshiba.co.jp" },
-    { "name": "三島", "email": "yasuyuki.mishima.r20@mail.toshiba" },
-    { "name": "若林", "email": "naoyuki.wakabayashi.v37@mail.toshiba" },
-    { "name": "中島", "email": "norikazu.nakajima.k58@mail.toshiba" },
-    { "name": "五島", "email": "shogo.goto.h12@mail.toshiba" },
-    { "name": "山崎", "email": "osamu.yamazaki.r30@mail.toshiba" }
   ],
   "boards": [
     { "name": "PWS132", "serialNumber": "" },

@@ -2,9 +2,9 @@ import { useCallback, useEffect, useState } from 'react';
 
 export default function UserManagement({ active, csrfToken, request, setAuthenticated, setLoginError }) {
   const [users, setUsers] = useState([]);
-  const [managerChoices, setManagerChoices] = useState([]);
   const [username, setUsername] = useState('');
   const [managerName, setManagerName] = useState('');
+  const [managerEmail, setManagerEmail] = useState('');
   const [password, setPassword] = useState('');
   const [resetPasswords, setResetPasswords] = useState({});
   const [showNewPassword, setShowNewPassword] = useState(false);
@@ -18,7 +18,6 @@ export default function UserManagement({ active, csrfToken, request, setAuthenti
     try {
       const result = await request('/api/admin/users', csrfToken);
       setUsers(result.users);
-      setManagerChoices(result.managerChoices);
       setMessage({ text: '', type: '' });
     } catch (error) {
       setMessage({ text: error.message, type: 'error' });
@@ -43,10 +42,11 @@ export default function UserManagement({ active, csrfToken, request, setAuthenti
       await request('/api/admin/users', csrfToken, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, managerName, password }),
+        body: JSON.stringify({ username, managerName, managerEmail, password }),
       });
       setUsername('');
       setManagerName('');
+      setManagerEmail('');
       setPassword('');
       await loadUsers();
       setMessage({ text: 'アカウントを作成しました。', type: 'success' });
@@ -84,13 +84,37 @@ export default function UserManagement({ active, csrfToken, request, setAuthenti
     }
   }
 
+  async function deleteUser(user) {
+    if (!window.confirm(
+      `ユーザー「${user.username}」を削除します。この操作は取り消せません。`,
+    )) {
+      return;
+    }
+    setPendingUserId(user.id);
+    setMessage({ text: '', type: '' });
+    try {
+      await request(`/api/admin/users/${user.id}`, csrfToken, { method: 'DELETE' });
+      await loadUsers();
+      setMessage({ text: 'アカウントを削除しました。', type: 'success' });
+    } catch (error) {
+      setMessage({ text: error.message, type: 'error' });
+      if (error.status === 401) {
+        setAuthenticated(false);
+        setLoginError(error.message);
+      }
+    } finally {
+      setPendingUserId(null);
+    }
+  }
+
   return (
     <section className="page-section active user-management">
       <h2>担当者アカウント</h2>
-      <p className="field-help">担当者候補にログインIDと初期パスワードを割り当てます。パスワードは本人に安全な方法で伝えてください。</p>
+      <p className="field-help">担当者名、ログインID、初期パスワードを登録します。パスワードは本人に安全な方法で伝えてください。</p>
       <form className="form-panel user-create-form" onSubmit={submitNewUser}>
         <label className="field">
           <span>ログインID</span>
+          <small className="field-help">半角英数字、ピリオド（.）、アンダースコア（_）、ハイフン（-）の3～50文字</small>
           <input
             type="text"
             autoComplete="off"
@@ -104,10 +128,24 @@ export default function UserManagement({ active, csrfToken, request, setAuthenti
         </label>
         <label className="field">
           <span>担当者</span>
-          <select required value={managerName} onChange={(event) => setManagerName(event.target.value)}>
-            <option value="" disabled>担当者を選択</option>
-            {managerChoices.map((choice) => <option key={choice} value={choice}>{choice}</option>)}
-          </select>
+          <small className="field-help">日本語、半角数字、空白の30文字以内</small>
+          <input
+            type="text"
+            maxLength="30"
+            pattern="[\p{Script_Extensions=Hiragana}\p{Script_Extensions=Katakana}\p{Script_Extensions=Han}0-9\\s]+"
+            required
+            value={managerName}
+            onChange={(event) => setManagerName(event.target.value)}
+          />
+        </label>
+        <label className="field">
+          <span>メールアドレス</span>
+          <input
+            type="email"
+            maxLength="254"
+            value={managerEmail}
+            onChange={(event) => setManagerEmail(event.target.value)}
+          />
         </label>
         <label className="field">
           <span>初期パスワード（8文字以上）</span>
@@ -131,7 +169,7 @@ export default function UserManagement({ active, csrfToken, request, setAuthenti
             </button>
           </div>
         </label>
-        <button type="submit" className="primary-button" disabled={pendingUserId === 'new' || !managerChoices.length}>
+        <button type="submit" className="primary-button" disabled={pendingUserId === 'new'}>
           {pendingUserId === 'new' ? '作成中...' : 'アカウントを作成'}
         </button>
       </form>
@@ -148,16 +186,16 @@ export default function UserManagement({ active, csrfToken, request, setAuthenti
       ) : (
         <div className="table-wrap">
           <table>
-            <thead><tr><th>ログインID</th><th>担当者</th><th>権限・状態</th><th>パスワード再設定</th><th>操作</th></tr></thead>
+            <thead><tr><th className="user-id-cell">ログインID</th><th className="user-manager-cell">担当者</th><th>メールアドレス</th><th>パスワード再設定</th><th>権限・状態</th><th>削除</th></tr></thead>
             <tbody>
               {users.map((user) => {
                 const resetPassword = resetPasswords[user.id] || '';
                 return (
                   <tr key={user.id}>
-                    <td>{user.username}</td>
-                    <td>{user.managerName || '管理者'}</td>
-                    <td>{user.role === 'admin' ? '管理者' : '担当者'}・{user.isActive ? '有効' : '無効'}</td>
-                    <td>
+                    <td className="user-id-cell">{user.username}</td>
+                    <td className="user-manager-cell">{user.managerName || '管理者'}</td>
+                    <td>{user.managerEmail || '—'}</td>
+                    <td className="user-password-cell">
                       <div className="password-input-control">
                         <input
                           type={showResetPasswords[user.id] ? "text" : "password"}
@@ -190,14 +228,27 @@ export default function UserManagement({ active, csrfToken, request, setAuthenti
                         onClick={() => updateUser(user, { password: resetPassword }, 'パスワードを再設定しました。')}
                       >再設定</button>
                     </td>
-                    <td>
+                    <td className="user-status-cell">
+                      <div className="user-status-control">
+                        <span>{user.role === 'admin' ? '管理者' : '担当者'}・{user.isActive ? '有効' : '無効'}</span>
+                        {user.role === 'user' && (
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            disabled={pendingUserId === user.id}
+                            onClick={() => updateUser(user, { isActive: !user.isActive }, user.isActive ? 'アカウントを無効にしました。' : 'アカウントを有効にしました。')}
+                          >{user.isActive ? '無効にする' : '有効にする'}</button>
+                        )}
+                      </div>
+                    </td>
+                    <td className="user-delete-cell">
                       {user.role === 'user' && (
                         <button
                           type="button"
-                          className="secondary-button"
+                          className="delete-button"
                           disabled={pendingUserId === user.id}
-                          onClick={() => updateUser(user, { isActive: !user.isActive }, user.isActive ? 'アカウントを無効にしました。' : 'アカウントを有効にしました。')}
-                        >{user.isActive ? '無効にする' : '有効にする'}</button>
+                          onClick={() => deleteUser(user)}
+                        >削除</button>
                       )}
                     </td>
                   </tr>

@@ -320,9 +320,9 @@ function validateRegistration(values) {
   if (!validText(
     values.manager,
     30,
-    /^[\p{Script_Extensions=Hiragana}\p{Script_Extensions=Katakana}\p{Script_Extensions=Han}\s]+$/u,
+    /^[\p{Script_Extensions=Hiragana}\p{Script_Extensions=Katakana}\p{Script_Extensions=Han}0-9\s]+$/u,
   )) {
-    return '担当者は日本語で入力してください。';
+    return '担当者は日本語と半角数字で入力してください。';
   }
   return '';
 }
@@ -1374,7 +1374,7 @@ function RegistrationForm({ registerForm, handleRegister, registrationRows, setR
                     <option value="" disabled>{managerChoices === null ? '読み込み中...' : managerOptions.length ? '担当者を選択' : '候補がありません'}</option>
                     {managerOptions.map((manager) => <option key={manager} value={manager}>{manager}</option>)}
                   </select>
-                  {managerChoices?.length === 0 && <small className="field-help">equipment-config.json の managerChoices に担当者名を設定してください。</small>}
+                  {managerChoices?.length === 0 && <small className="field-help">管理者のユーザー管理で担当者アカウントを作成してください。</small>}
                 </label>
                 {!isEditing && (
                   <div className="field record-field-result-file result-file-picker">

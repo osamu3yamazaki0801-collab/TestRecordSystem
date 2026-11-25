@@ -30,7 +30,6 @@ MAX_REQUEST_SIZE = MAX_TOTAL_FILE_SIZE + 2 * 1024 * 1024
 DEFAULT_INSTRUMENT_ROWS = 5
 MAX_INSTRUMENT_ROWS = 50
 MAX_INSTRUMENT_CHOICES = 50
-MAX_MANAGER_CHOICES = 100
 MAX_JUMPERS = 50
 MAX_MANUAL_TESTS = 50
 MAX_MANUAL_TEST_ITEMS = 200
@@ -426,34 +425,6 @@ def load_equipment_config(config_path):
 
     if not isinstance(config, dict):
         raise ValueError("機器設定JSONのルートはオブジェクトにしてください。")
-    configured_managers = config.get("managerChoices", [])
-    manager_choices = []
-    if not isinstance(configured_managers, list) or len(configured_managers) > MAX_MANAGER_CHOICES:
-        raise ValueError(
-            f"計測器設定JSONのmanagerChoicesは{MAX_MANAGER_CHOICES}件以内の配列にしてください。"
-        )
-    manager_names = set()
-    for manager in configured_managers:
-        if isinstance(manager, str):
-            manager_name = manager
-        elif isinstance(manager, dict) and set(manager) in ({"name"}, {"name", "email"}):
-            manager_name = manager["name"]
-        else:
-            raise ValueError(
-                "managerChoicesには担当者名の文字列、またはnameを持つオブジェクトを指定してください。"
-            )
-        if (
-            not isinstance(manager_name, str)
-            or len(manager_name) > 30
-            or manager_name != manager_name.strip()
-            or not is_japanese_text(manager_name)
-            or manager_name in manager_names
-        ):
-            raise ValueError(
-                "managerChoicesには重複しない日本語の担当者名（30文字以内）を指定してください。"
-            )
-        manager_names.add(manager_name)
-        manager_choices.append(manager_name)
     choices = config.get("instrumentChoices", DEFAULT_INSTRUMENT_CHOICES)
     if not isinstance(choices, list) or len(choices) > MAX_INSTRUMENT_CHOICES:
         raise ValueError(
@@ -523,7 +494,6 @@ def load_equipment_config(config_path):
     software_sections = config.get("softwareSections", DEFAULT_SOFTWARE_SECTIONS)
     validate_software_sections(software_sections)
     return {
-        "managerChoices": manager_choices,
         "instrumentChoices": choices,
         "boards": boards,
         "jumpers": jumpers,
@@ -665,6 +635,12 @@ def is_japanese_text(value):
     return bool(value.strip())
 
 
+def is_manager_text(value):
+    return is_japanese_text(value.replace("0", "").replace("1", "").replace("2", "")
+        .replace("3", "").replace("4", "").replace("5", "").replace("6", "")
+        .replace("7", "").replace("8", "").replace("9", ""))
+
+
 # Flask アプリ本体を生成する。
 # ここで必要な設定値 (SECRET_KEY, DB パス, セッション設定など) をまとめて持つ。
 def create_app(test_config=None):
@@ -720,7 +696,6 @@ def create_app(test_config=None):
         app.config["EQUIPMENT_CONFIG_PATH"]
     )
     app.config["INSTRUMENT_CHOICES"] = equipment_config["instrumentChoices"]
-    app.config["MANAGER_CHOICES"] = equipment_config["managerChoices"]
     app.config["BOARD_DEFAULTS"] = equipment_config["boards"]
     app.config["JUMPERS"] = equipment_config["jumpers"]
     app.config["APPEARANCE_INSPECTION"] = equipment_config["appearanceInspection"]
@@ -759,6 +734,7 @@ def create_app(test_config=None):
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     username TEXT NOT NULL COLLATE NOCASE UNIQUE,
                     manager_name TEXT COLLATE NOCASE UNIQUE,
+                    manager_email TEXT,
                     password_hash TEXT NOT NULL,
                     role TEXT NOT NULL CHECK (role IN ('admin', 'user')),
                     is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
@@ -874,6 +850,11 @@ def create_app(test_config=None):
                 connection.execute(
                     "ALTER TABLE workflow_steps ADD COLUMN assignee_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL"
                 )
+            user_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(users)")
+            }
+            if "manager_email" not in user_columns:
+                connection.execute("ALTER TABLE users ADD COLUMN manager_email TEXT")
             appearance_columns = {
                 row["name"] for row in connection.execute("PRAGMA table_info(appearance_checks)")
             }
@@ -1032,8 +1013,8 @@ def create_app(test_config=None):
             ),
             "manager": (
                 30,
-                is_japanese_text,
-                "担当者は日本語で入力してください。",
+                is_manager_text,
+                "担当者は日本語と半角数字で入力してください。",
             ),
         }
         values = {}
@@ -1214,29 +1195,21 @@ def create_app(test_config=None):
         with closing(connect_db()) as connection:
             users = connection.execute(
                 """
-                SELECT id, username, manager_name, role, is_active, created_at
+                SELECT id, username, manager_name, manager_email, role, is_active, created_at
                 FROM users ORDER BY role, username COLLATE NOCASE
                 """
             ).fetchall()
-            assigned_managers = {
-                row["manager_name"].casefold()
-                for row in connection.execute(
-                    "SELECT manager_name FROM users WHERE manager_name IS NOT NULL"
-                )
-            }
         return jsonify(users=[
             {
                 "id": user["id"],
                 "username": user["username"],
                 "managerName": user["manager_name"],
+                "managerEmail": user["manager_email"] or "",
                 "role": user["role"],
                 "isActive": bool(user["is_active"]),
                 "createdAt": user["created_at"],
             }
             for user in users
-        ], managerChoices=[
-            manager for manager in app.config["MANAGER_CHOICES"]
-            if manager.casefold() not in assigned_managers
         ])
 
     @app.post("/api/admin/users")
@@ -1248,17 +1221,27 @@ def create_app(test_config=None):
             return jsonify(error="アカウント情報の形式が正しくありません。"), 400
         username = data.get("username")
         manager_name = data.get("managerName")
+        manager_email = data.get("managerEmail", "")
         password = data.get("password")
         if (
             not isinstance(username, str)
             or not re.fullmatch(r"[A-Za-z0-9._-]{3,50}", username)
             or not isinstance(manager_name, str)
-            or manager_name not in app.config["MANAGER_CHOICES"]
+            or len(manager_name.strip()) > 30
+            or manager_name != manager_name.strip()
+            or not is_manager_text(manager_name)
+            or not isinstance(manager_email, str)
+            or len(manager_email.strip()) > 254
+            or manager_email != manager_email.strip()
+            or (
+                manager_email
+                and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", manager_email)
+            )
             or not isinstance(password, str)
             or not 8 <= len(password) <= 256
         ):
             return jsonify(
-                error="ユーザーIDは半角英数字等3～50文字、担当者候補と8～256文字のパスワードを指定してください。"
+                error="ユーザーID、担当者名、メールアドレス、8～256文字のパスワードを確認してください。"
             ), 400
         password_hash = generate_password_hash(password)
         with closing(connect_db()) as connection, connection:
@@ -1266,10 +1249,11 @@ def create_app(test_config=None):
             try:
                 cursor = connection.execute(
                     """
-                    INSERT INTO users (username, manager_name, password_hash, role)
-                    VALUES (?, ?, ?, 'user')
+                    INSERT INTO users (
+                        username, manager_name, manager_email, password_hash, role
+                    ) VALUES (?, ?, ?, ?, 'user')
                     """,
-                    (username, manager_name, password_hash),
+                    (username, manager_name, manager_email, password_hash),
                 )
             except sqlite3.IntegrityError:
                 return jsonify(error="ユーザーIDまたは担当者には既にアカウントが登録されています。"), 409
@@ -1285,6 +1269,7 @@ def create_app(test_config=None):
             id=user_id,
             username=username,
             managerName=manager_name,
+            managerEmail=manager_email,
             role="user",
             isActive=True,
         ), 201
@@ -1370,7 +1355,40 @@ def create_app(test_config=None):
                 (new_password_hash, g.user["id"]),
             )
             connection.commit()
-        
+        return jsonify(success=True)
+
+    @app.delete("/api/admin/users/<int:user_id>")
+    @require_admin
+    @require_csrf
+    def delete_user(user_id):
+        with closing(connect_db()) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            user = connection.execute(
+                "SELECT id, username, role FROM users WHERE id = ?", (user_id,)
+            ).fetchone()
+            if not user:
+                abort(404)
+            if user_id == g.user["id"]:
+                return jsonify(error="ログイン中のアカウントは削除できません。"), 400
+            if user["role"] == "admin":
+                return jsonify(error="管理者アカウントは削除できません。"), 400
+            active_assignment = connection.execute(
+                """
+                SELECT 1
+                FROM workflow_steps AS steps
+                JOIN record_workflows AS workflows
+                  ON workflows.id = steps.workflow_id
+                WHERE steps.assignee_user_id = ?
+                  AND workflows.status != 'completed'
+                LIMIT 1
+                """,
+                (user_id,),
+            ).fetchone()
+            if active_assignment:
+                return jsonify(
+                    error="未完了の回覧に割り当てられているため削除できません。"
+                ), 409
+            connection.execute("DELETE FROM users WHERE id = ?", (user_id,))
         return jsonify(success=True)
 
     # ダッシュボード表示に必要な件数と担当者別の月次集計を返す。
@@ -1940,9 +1958,20 @@ def create_app(test_config=None):
     @app.get("/api/equipment-config")
     @require_login
     def get_equipment_config():
+        with closing(connect_db()) as connection:
+            manager_choices = [
+                row["manager_name"]
+                for row in connection.execute(
+                    """
+                    SELECT manager_name FROM users
+                    WHERE role = 'user' AND is_active = 1 AND manager_name IS NOT NULL
+                    ORDER BY manager_name
+                    """
+                ).fetchall()
+            ]
         return jsonify(
             instrumentChoices=app.config["INSTRUMENT_CHOICES"],
-            managerChoices=app.config["MANAGER_CHOICES"],
+            managerChoices=manager_choices,
             manualTests=app.config["MANUAL_TESTS"],
             softwareSections=app.config["SOFTWARE_SECTIONS"],
         )
@@ -2200,23 +2229,12 @@ def create_app(test_config=None):
                 
                 # メール送信: 次の担当者にメールを送信
                 next_assignee = connection.execute(
-                    "SELECT username, manager_name FROM users WHERE id = ?",
+                    "SELECT username, manager_name, manager_email FROM users WHERE id = ?",
                     (following["assignee_user_id"],),
                 ).fetchone()
                 
                 if next_assignee:
-                    # equipment-config.json から次の担当者のメールアドレスを取得
-                    with open(app.config["EQUIPMENT_CONFIG_PATH"], encoding="utf-8") as f:
-                        config = json.load(f)
-                    
-                    next_email = None
-                    for manager in config.get("managerChoices", []):
-                        # manager は辞書または文字列（旧形式）の場合がある
-                        manager_name = manager.get("name") if isinstance(manager, dict) else manager
-                        if manager_name == next_assignee["manager_name"]:
-                            next_email = manager.get("email") if isinstance(manager, dict) else None
-                            break
-                    
+                    next_email = next_assignee["manager_email"]
                     if next_email:
                         send_workflow_advancement_email(
                             recipient_email=next_email,

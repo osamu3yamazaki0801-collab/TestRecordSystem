@@ -914,13 +914,13 @@ def create_app(test_config=None):
             ),
             "projectName": (
                 30,
-                re.compile(r"[\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF0-9A-Za-z\s-]+"),
-                "案件名は日本語または英数字で30文字以内で入力してください。",
+                re.compile(r"[\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF0-9A-Za-z\s_-]+"),
+                "案件名は日本語、英数字、空白、アンダースコアまたはハイフンで30文字以内で入力してください。",
             ),
             "productNo": (
                 30,
-                re.compile(r"[A-Za-z0-9 -]+"),
-                "製番は30文字以内で、スペースを含む半角英数字を入力してください。",
+                re.compile(r"[A-Za-z0-9 ._-]+"),
+                "製番は30文字以内で、半角英数字、空白、ピリオド、アンダースコアまたはハイフンを入力してください。",
             ),
             "manager": (
                 30,
@@ -941,8 +941,9 @@ def create_app(test_config=None):
 
         registration_date = form.get("registrationDate", "").strip()
         try:
-            if not re.fullmatch(r"\d{8}", registration_date):
+            if not re.fullmatch(r"(?:\d{8}|\d{4}-\d{2}-\d{2})", registration_date):
                 raise ValueError
+            registration_date = registration_date.replace("-", "")
             date(
                 int(registration_date[:4]),
                 int(registration_date[4:6]),
@@ -953,7 +954,7 @@ def create_app(test_config=None):
                 None,
                 None,
                 None,
-                ("登録日は実在する日付をyyyymmdd形式で入力してください。", 400),
+                ("登録日は実在する日付をyyyy-mm-dd形式で入力してください。", 400),
             )
 
         uploads = [upload for upload in uploads if upload and upload.filename]
@@ -1314,30 +1315,36 @@ def create_app(test_config=None):
     @require_login
     @require_csrf
     def reserve_next_trial_number():
-        prefix = date.today().strftime("%y%m")
+        prefix = f"{date.today():%y}0"
+        payload = request.get_json(silent=True) or {}
+        occupied_trial_numbers = payload.get("occupiedTrialNumbers", [])
+        if (
+            not isinstance(occupied_trial_numbers, list)
+            or any(not isinstance(trial_no, str) for trial_no in occupied_trial_numbers)
+        ):
+            return jsonify(error="採番に使用する試験番号の形式が正しくありません。"), 400
         with closing(connect_db()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             used_numbers = connection.execute(
                 """
                 SELECT trial_no FROM records WHERE trial_no LIKE ?
-                UNION
-                SELECT trial_no FROM trial_number_reservations WHERE trial_no LIKE ?
                 """,
-                (f"{prefix}%", f"{prefix}%"),
+                (f"{prefix}%",),
             ).fetchall()
             serials = [
                 int(match.group(1))
-                for row in used_numbers
-                if (match := re.fullmatch(rf"{prefix}(\d{{4}})", row["trial_no"]))
+                for trial_no in (
+                    [row["trial_no"] for row in used_numbers] + occupied_trial_numbers
+                )
+                if (match := re.fullmatch(rf"{prefix}(\d{{5}})", trial_no))
             ]
-            next_serial = max(serials, default=0) + 1
-            if next_serial > 9999:
-                return jsonify(error="今月の採番上限（9999件）に達しました。"), 409
-            trial_no = f"{prefix}{next_serial:04d}"
-            connection.execute(
-                "INSERT INTO trial_number_reservations (trial_no, reserved_by) VALUES (?, ?)",
-                (trial_no, session["username"]),
-            )
+            used_serials = set(serials)
+            next_serial = 0
+            while next_serial in used_serials:
+                next_serial += 1
+            if next_serial > 99999:
+                return jsonify(error="今年の採番上限（99999）に達しました。"), 409
+            trial_no = f"{prefix}{next_serial:05d}"
         return jsonify(trialNo=trial_no), 201
 
     def trial_number_exists(connection, trial_no, exclude_record_id=None):
@@ -1355,7 +1362,7 @@ def create_app(test_config=None):
     @require_login
     def records():
         if request.method == "GET":
-            filters = {
+            raw_filters = {
                 "trial_no": request.args.get("trialNo", ""),
                 "project_name": request.args.get("projectName", ""),
                 "product_no": request.args.get("productNo", ""),
@@ -1366,14 +1373,18 @@ def create_app(test_config=None):
                 "trial_no": 20,
                 "project_name": 30,
                 "product_no": 30,
-                "registration_date": 8,
+                "registration_date": 10,
                 "manager": 30,
             }
             if any(
                 len(value) > max_filter_lengths[key]
-                for key, value in filters.items()
+                for key, value in raw_filters.items()
             ):
                 return jsonify(error="検索条件が長すぎます。"), 400
+            filters = {
+                **raw_filters,
+                "registration_date": raw_filters["registration_date"].replace("-", ""),
+            }
             patterns = {
                 key: matching_pattern(value)
                 for key, value in filters.items()
@@ -2562,9 +2573,26 @@ def create_app(test_config=None):
         if len(content) > MAX_FILE_SIZE:
             return jsonify(error="添付ファイルは1件あたり100 MB以下にしてください。"), 413
         try:
-            parse_trial_results_file(upload.filename, content)
+            parsed_results = parse_trial_results_file(upload.filename, content)
         except ValueError as error:
             return jsonify(error=str(error)), 400
+
+        project_name = parsed_results["metadata"]["品名"].strip()
+        product_no = parsed_results["metadata"]["仕様書番号"].strip()
+        if validate_text(
+            project_name,
+            30,
+            re.compile(r"[\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF0-9A-Za-z\s_-]+"),
+            "案件名",
+        ):
+            return jsonify(error="CSVの品名が案件名の入力規則に一致しません。"), 400
+        if validate_text(
+            product_no,
+            30,
+            re.compile(r"[A-Za-z0-9 ._-]+"),
+            "製番",
+        ):
+            return jsonify(error="CSVの仕様書番号が製番の入力規則に一致しません。"), 400
 
         file_name = upload.filename.replace("\\", "/").rsplit("/", 1)[-1]
         file_name = "".join(char for char in file_name if char.isprintable()).strip()[:255]
@@ -2579,6 +2607,10 @@ def create_app(test_config=None):
                 "SELECT id FROM record_files WHERE record_id = ?", (record_id,)
             ).fetchone():
                 return jsonify(error="試験結果ファイルは1件だけ登録できます。"), 409
+            connection.execute(
+                "UPDATE records SET project_name = ?, product_no = ? WHERE id = ?",
+                (project_name, product_no, record_id),
+            )
             cursor = connection.execute(
                 """
                 INSERT INTO record_files (
@@ -2588,7 +2620,11 @@ def create_app(test_config=None):
                 (record_id, file_name, upload.mimetype or "application/octet-stream", content),
             )
             files = [{"id": cursor.lastrowid, "fileName": file_name}]
-        return jsonify(files=files), 201
+        return jsonify(
+            files=files,
+            projectName=project_name,
+            productNo=product_no,
+        ), 201
 
     @app.delete("/api/records/<int:record_id>/files/<int:file_id>")
     @require_login
@@ -2655,6 +2691,21 @@ def create_app(test_config=None):
         with closing(connect_db()) as connection:
             if not connection.execute("SELECT id FROM records WHERE id = ?", (record_id,)).fetchone():
                 abort(404)
+        upload = request.files.get("resultFile")
+        if not upload or not upload.filename:
+            return jsonify(error="試験結果CSVを選択してください。"), 400
+        content = upload.read(MAX_FILE_SIZE + 1)
+        if len(content) > MAX_FILE_SIZE:
+            return jsonify(error="添付ファイルは1件あたり100 MB以下にしてください。"), 413
+        try:
+            return jsonify(parse_trial_results_file(upload.filename, content))
+        except ValueError as error:
+            return jsonify(error=str(error)), 400
+
+    @app.post("/api/trial-results/preview")
+    @require_login
+    @require_csrf
+    def preview_new_trial_results():
         upload = request.files.get("resultFile")
         if not upload or not upload.filename:
             return jsonify(error="試験結果CSVを選択してください。"), 400

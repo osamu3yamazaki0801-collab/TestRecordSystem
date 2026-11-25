@@ -94,7 +94,7 @@ function todayDateString() {
   const today = new Date();
   const month = String(today.getMonth() + 1).padStart(2, '0');
   const day = String(today.getDate()).padStart(2, '0');
-  return `${today.getFullYear()}${month}${day}`;
+  return `${today.getFullYear()}-${month}-${day}`;
 }
 
 function emptyRegistrationValues() {
@@ -110,10 +110,14 @@ function emptyRegistrationValues() {
 }
 
 function formatRegistrationDate(value) {
-  if (value.length !== 8) {
-    return value;
-  }
-  return `${value.slice(0, 4)}/${value.slice(4, 6)}/${value.slice(6, 8)}`;
+  const compact = value.replaceAll('-', '');
+  return compact.length === 8
+    ? `${compact.slice(0, 4)}-${compact.slice(4, 6)}-${compact.slice(6, 8)}`
+    : value;
+}
+
+function compactRegistrationDate(value) {
+  return value.replaceAll('-', '');
 }
 
 function buildManagerStats(records, year) {
@@ -126,7 +130,7 @@ function buildManagerStats(records, year) {
     ) {
       continue;
     }
-    const month = Number(record.registrationDate.slice(4, 6));
+    const month = Number(compactRegistrationDate(record.registrationDate).slice(4, 6));
     if (!Number.isInteger(month) || month < 1 || month > 12) continue;
     const counts = countsByManager.get(record.manager) || Array(12).fill(0);
     counts[month - 1] += 1;
@@ -304,14 +308,14 @@ function validateRegistration(values) {
   if (!validText(values.trialNo, 20, /^[A-Za-z0-9-]+$/)) {
     return '試験番号は半角英数字またはハイフンで20文字以内で入力してください。';
   }
-  if (values.projectName.trim() && !validText(values.projectName, 30, /^[\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF0-9A-Za-z\s-]+$/)) {
-    return '案件名は日本語または英数字で30文字以内で入力してください。';
+  if (values.projectName.trim() && !validText(values.projectName, 30, /^[\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF0-9A-Za-z\s_-]+$/)) {
+    return '案件名は日本語、英数字、空白、アンダースコアまたはハイフンで30文字以内で入力してください。';
   }
-  if (values.productNo.trim() && !validText(values.productNo, 30, /^[A-Za-z0-9 -]+$/)) {
-    return '製番は30文字以内で、スペースを含む半角英数字を入力してください。';
+  if (values.productNo.trim() && !validText(values.productNo, 30, /^[A-Za-z0-9 ._-]+$/)) {
+    return '製番は30文字以内で、半角英数字、空白、ピリオド、アンダースコアまたはハイフンを入力してください。';
   }
-  if (!/^\d{8}$/.test(values.registrationDate.trim())) {
-    return '登録日はyyyymmdd形式で入力してください。';
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(values.registrationDate.trim())) {
+    return '登録日はyyyy-mm-dd形式で入力してください。';
   }
   if (!validText(
     values.manager,
@@ -334,6 +338,7 @@ function Message({ children, type = '' }) {
 function App() {
   // csrfToken は再レンダリングのたびに変わらないよう useRef で保持する。
   const csrfToken = useRef('');
+  const allocatingTrialNumberRows = useRef(new Set());
   // 登録フォームのリセットに使う参照。
   const registerForm = useRef(null);
   const [authenticated, setAuthenticated] = useState(false);
@@ -431,10 +436,12 @@ function App() {
             const allRecords = await apiRequest('/api/records', csrfToken.current);
             if (!active) return;
             const now = new Date();
-            const currentMonth = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
+            const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
             setDashboard({
               totalRecords: allRecords.length,
-              monthRecords: allRecords.filter((record) => record.registrationDate.startsWith(currentMonth)).length,
+              monthRecords: allRecords.filter((record) => (
+                formatRegistrationDate(record.registrationDate).startsWith(currentMonth)
+              )).length,
               currentMonth: `${now.getFullYear()}年${now.getMonth() + 1}月`,
               managerStats: buildManagerStats(allRecords, now.getFullYear()),
             });
@@ -560,6 +567,17 @@ function App() {
   function navigateTo(target) {
     if (SECTION_DETAILS[target]) {
       setSection(target);
+      if (target === 'registerSection' && editingRecordId === null) {
+        const occupiedTrialNumbers = registrationRows
+          .map((row) => row.trialNo)
+          .filter(Boolean);
+        const emptyRows = registrationRows.filter((row) => row.trialNo === '');
+        emptyRows.reduce(async (previous, row) => {
+          await previous;
+          const trialNo = await allocateTrialNumber(row.rowId, occupiedTrialNumbers);
+          if (trialNo) occupiedTrialNumbers.push(trialNo);
+        }, Promise.resolve());
+      }
     }
   }
 
@@ -639,18 +657,26 @@ function App() {
     }
   }
 
-  async function allocateTrialNumber(rowId) {
+  async function allocateTrialNumber(rowId, occupiedTrialNumbers = []) {
+    if (allocatingTrialNumberRows.current.has(rowId)) return '';
+    allocatingTrialNumberRows.current.add(rowId);
     try {
       const result = await apiRequest(
         '/api/trial-numbers/next',
         csrfToken.current,
-        { method: 'POST' },
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ occupiedTrialNumbers }),
+        },
       );
       setRegistrationRows((current) => current.map((row) => (
-        row.rowId === rowId ? { ...row, trialNo: result.trialNo } : row
+        row.rowId === rowId && row.trialNo === ''
+          ? { ...row, trialNo: result.trialNo }
+          : row
       )));
-      setRegisterMessage({ text: `試験番号「${result.trialNo}」を採番しました。`, type: 'success' });
-      return true;
+      setRegisterMessage({ text: `試験番号「${result.trialNo}」を自動入力しました。`, type: 'success' });
+      return result.trialNo;
     } catch (error) {
       setRegisterMessage({ text: error.message, type: 'error' });
       if (error instanceof ApiError && error.status === 401) {
@@ -658,7 +684,49 @@ function App() {
         setAuthenticated(false);
         setLoginError(error.message);
       }
-      return false;
+      return '';
+    } finally {
+      allocatingTrialNumberRows.current.delete(rowId);
+    }
+  }
+
+  async function importRegistrationCsv(rowId, file) {
+    setRegistrationRows((rows) => rows.map((row) => (
+      row.rowId === rowId ? { ...row, resultFile: file } : row
+    )));
+    setRecordDirty(true);
+    if (!file) return;
+
+    const formData = new FormData();
+    formData.append('resultFile', file);
+    try {
+      const result = await apiRequest(
+        '/api/trial-results/preview',
+        csrfToken.current,
+        { method: 'POST', body: formData },
+      );
+      const productName = String(result.metadata?.品名 || '');
+      const specificationNo = String(result.metadata?.仕様書番号 || '');
+      setRegistrationRows((rows) => rows.map((row) => (
+        row.rowId === rowId && row.resultFile === file
+          ? {
+            ...row,
+            projectName: productName,
+            productNo: specificationNo,
+          }
+          : row
+      )));
+      setRegisterMessage({
+        text: 'CSVの品名と仕様書番号を案件名・製番へ転記しました。',
+        type: 'success',
+      });
+    } catch (error) {
+      setRegisterMessage({ text: error.message, type: 'error' });
+      if (error instanceof ApiError && error.status === 401) {
+        csrfToken.current = '';
+        setAuthenticated(false);
+        setLoginError(error.message);
+      }
     }
   }
 
@@ -826,7 +894,7 @@ function App() {
       trialNo: record.trialNo,
       projectName: record.projectName,
       productNo: record.productNo,
-      registrationDate: record.registrationDate,
+      registrationDate: formatRegistrationDate(record.registrationDate),
       manager: record.manager,
       resultFile: null,
     }]);
@@ -849,17 +917,37 @@ function App() {
       trialNo: record.trialNo,
       projectName: record.projectName,
       productNo: record.productNo,
-      registrationDate: record.registrationDate,
+      registrationDate: formatRegistrationDate(record.registrationDate),
       manager: record.manager,
     }]);
     setRegisterMessage({ text: '', type: '' });
   }
 
-  function handleDetailFilesChanged(recordId, files) {
+  function handleDetailFilesChanged(recordId, files, metadata = {}) {
     setExistingFiles(files);
     setDetailRecord((current) => current && current.id === recordId
-      ? { ...current, files, fileName: files[0]?.fileName || null }
+      ? {
+        ...current,
+        files,
+        fileName: files[0]?.fileName || null,
+        projectName: metadata.projectName ?? current.projectName,
+        productNo: metadata.productNo ?? current.productNo,
+      }
       : current);
+    if (metadata.projectName !== undefined || metadata.productNo !== undefined) {
+      setRecords((current) => current.map((item) => item.id === recordId
+        ? {
+          ...item,
+          projectName: metadata.projectName ?? item.projectName,
+          productNo: metadata.productNo ?? item.productNo,
+        }
+        : item));
+      setRegistrationRows((current) => current.map((row) => ({
+        ...row,
+        projectName: metadata.projectName ?? row.projectName,
+        productNo: metadata.productNo ?? row.productNo,
+      })));
+    }
   }
 
   function handlePowerBoardReportChanged(recordId, powerBoardReport) {
@@ -956,6 +1044,7 @@ function App() {
       registering={registering}
       cancelRegister={cancelRegister}
       registerMessage={registerMessage}
+      onCsvSelected={importRegistrationCsv}
       onChange={() => setRecordDirty(true)}
     />
   );
@@ -1107,7 +1196,7 @@ function App() {
                 <SearchField label="試験番号" name="trialNo" fieldClassName="record-field-trial-no" value={searchFilters.trialNo} onChange={setSearchFilters} placeholder="試験番号" maxLength={20} />
                 <SearchField label="案件名" name="projectName" fieldClassName="record-field-project-name" value={searchFilters.projectName} onChange={setSearchFilters} placeholder="案件名" maxLength={30} />
                 <SearchField label="製番" name="productNo" fieldClassName="record-field-product-no" value={searchFilters.productNo} onChange={setSearchFilters} placeholder="製番" maxLength={30} />
-                <SearchField label="登録日" name="date" fieldClassName="record-field-registration-date" value={searchFilters.date} onChange={setSearchFilters} placeholder="yyyymmdd" maxLength={8} />
+                <SearchField label="登録日" name="date" fieldClassName="record-field-registration-date" value={searchFilters.date} onChange={setSearchFilters} placeholder="yyyy-mm-dd" maxLength={10} />
                 <SearchField label="担当者" name="manager" fieldClassName="record-field-manager" value={searchFilters.manager} onChange={setSearchFilters} placeholder="担当者" maxLength={30} />
               </div>
               {searchMessage.text && <Message type={searchMessage.type}>{searchMessage.text}</Message>}
@@ -1141,7 +1230,7 @@ function App() {
                       <td>{record.trialNo}</td>
                       <td>{record.projectName}</td>
                       <td>{record.productNo}</td>
-                      <td>{record.registrationDate}</td>
+                      <td>{formatRegistrationDate(record.registrationDate)}</td>
                       <td>{record.manager}</td>
                       <td>
                         <div className="record-actions">
@@ -1208,10 +1297,9 @@ function App() {
   );
 }
 
-function RegistrationForm({ registerForm, handleRegister, registrationRows, setRegistrationRows, allocateTrialNumber, managerChoices, editingRecordId, registering, cancelRegister, registerMessage, onChange }) {
+function RegistrationForm({ registerForm, handleRegister, registrationRows, setRegistrationRows, allocateTrialNumber, managerChoices, editingRecordId, registering, cancelRegister, registerMessage, onCsvSelected, onChange }) {
   const availableManagers = managerChoices || [];
   const isEditing = editingRecordId !== null;
-  const [allocatingRowIds, setAllocatingRowIds] = useState([]);
 
   function updateRow(index, name, value) {
     setRegistrationRows((rows) => rows.map((row, rowIndex) => (
@@ -1219,28 +1307,24 @@ function RegistrationForm({ registerForm, handleRegister, registrationRows, setR
     )));
   }
 
-  function addRow() {
+  async function addRow() {
     const sharedValues = registrationRows[0] || emptyRegistrationValues();
+    const rowId = ++registrationRowSequence;
     setRegistrationRows((rows) => [
       ...rows,
       {
         ...sharedValues,
-        rowId: ++registrationRowSequence,
+        rowId,
         trialNo: '',
         productNo: '',
         resultFile: null,
       },
     ]);
     onChange();
-  }
-
-  async function allocateNumber(rowId) {
-    setAllocatingRowIds((current) => [...current, rowId]);
-    try {
-      await allocateTrialNumber(rowId);
-    } finally {
-      setAllocatingRowIds((current) => current.filter((id) => id !== rowId));
-    }
+    await allocateTrialNumber(
+      rowId,
+      registrationRows.map((row) => row.trialNo).filter(Boolean),
+    );
   }
 
   return (
@@ -1276,25 +1360,14 @@ function RegistrationForm({ registerForm, handleRegister, registrationRows, setR
                       name={fieldName('trialNo')}
                       type="text"
                       maxLength="20"
-                      placeholder="例: 26110001"
+                      placeholder="例: 26000000"
                       aria-label={`記録 ${index + 1} の試験番号`}
                       value={values.trialNo}
                       onChange={(event) => updateRow(index, 'trialNo', event.target.value)}
                       required
                     />
-                    {!isEditing && (
-                      <button
-                        type="button"
-                        className="secondary-button"
-                        disabled={registering || allocatingRowIds.includes(rowId)}
-                        onClick={() => allocateNumber(rowId)}
-                      >{allocatingRowIds.includes(rowId) ? '採番中...' : '採番'}</button>
-                    )}
                   </div>
                 </div>
-                <label className="field record-field-project-name"><span>案件名</span><input name={fieldName('projectName')} type="text" maxLength="30" placeholder="例: JR東海N700S CI" value={values.projectName} onChange={(event) => updateRow(index, 'projectName', event.target.value)} /></label>
-                <label className="field record-field-product-no"><span>製番</span><input name={fieldName('productNo')} type="text" maxLength="30" placeholder="例: 12345678 DG 0001" value={values.productNo} onChange={(event) => updateRow(index, 'productNo', event.target.value)} /></label>
-                <label className="field record-field-registration-date"><span>登録日</span><input name={fieldName('registrationDate')} type="text" maxLength="8" value={values.registrationDate} onChange={(event) => updateRow(index, 'registrationDate', event.target.value)} placeholder="yyyymmdd" required /></label>
                 <label className="field record-field-manager">
                   <span>担当者<span className="required-badge">必須</span></span>
                   <select name={fieldName('manager')} value={values.manager} onChange={(event) => updateRow(index, 'manager', event.target.value)} required disabled={managerChoices === null}>
@@ -1312,7 +1385,10 @@ function RegistrationForm({ registerForm, handleRegister, registrationRows, setR
                         type="file"
                         accept=".csv,text/csv"
                         disabled={registering}
-                        onChange={(event) => updateRow(index, 'resultFile', event.currentTarget.files?.[0] || null)}
+                        onChange={(event) => onCsvSelected(
+                          rowId,
+                          event.currentTarget.files?.[0] || null,
+                        )}
                       />
                     </label>
                     {values.resultFile
@@ -1320,6 +1396,9 @@ function RegistrationForm({ registerForm, handleRegister, registrationRows, setR
                       : <small className="field-help">自動試験システムの試験結果CSVをインポートしてください。</small>}
                   </div>
                 )}
+                <label className="field record-field-project-name"><span>案件名</span><input name={fieldName('projectName')} type="text" maxLength="30" placeholder="例: JR東海N700S CI" value={values.projectName} onChange={(event) => updateRow(index, 'projectName', event.target.value)} /></label>
+                <label className="field record-field-product-no"><span>製番</span><input name={fieldName('productNo')} type="text" maxLength="30" placeholder="例: 12345678 DG 0001" value={values.productNo} onChange={(event) => updateRow(index, 'productNo', event.target.value)} /></label>
+                <label className="field record-field-registration-date"><span>登録日</span><input name={fieldName('registrationDate')} type="text" maxLength="10" value={values.registrationDate} onChange={(event) => updateRow(index, 'registrationDate', event.target.value)} placeholder="yyyy-mm-dd" required /></label>
               </div>
             </section>
           );
@@ -1338,9 +1417,7 @@ function RegistrationForm({ registerForm, handleRegister, registrationRows, setR
 }
 
 function RecordDetails({ record, onClose, recordDirty, registering, registrationForm, equipment, instrumentChoices, managerChoices, workflowUsers, softwareSections, setEquipment, jumpers, setJumpers, appearance, setAppearance, insertionKeys, setInsertionKeys, manualTests, setManualTests, manualConditions, setManualConditions, onDirty, cancelRegister, registerMessage, pendingFiles, existingFiles, onFilesChanged, onPowerBoardReportChanged, csrfToken, setAuthenticated, setLoginError }) {
-  const [activeTab, setActiveTab] = useState(() => (
-    existingFiles.some((file) => /\.csv$/i.test(file.fileName)) ? 2 : 0
-  ));
+  const [activeTab, setActiveTab] = useState(0);
   const [commonPanelWidth, setCommonPanelWidth] = useState(240);
   const [fileActionPending, setFileActionPending] = useState(false);
   const [fileActionMessage, setFileActionMessage] = useState({ text: '', type: '' });
@@ -1409,8 +1486,14 @@ function RecordDetails({ record, onClose, recordDirty, registering, registration
         method: 'POST',
         body: formData,
       });
-      onFilesChanged(record.id, result.files);
-      setFileActionMessage({ text: '試験結果CSVを保存しました。', type: 'success' });
+      onFilesChanged(record.id, result.files, {
+        projectName: result.projectName,
+        productNo: result.productNo,
+      });
+      setFileActionMessage({
+        text: '試験結果CSVを保存し、品名・仕様書番号を案件名・製番へ転記しました。',
+        type: 'success',
+      });
     } catch (error) {
       setFileActionMessage({ text: error.message, type: 'error' });
       if (error.status === 401) {

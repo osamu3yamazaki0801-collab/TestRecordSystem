@@ -196,9 +196,7 @@ button {
 }
 
 .trial-number-controls {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 6px;
+  min-width: 0;
 }
 
 .trial-number-controls input {

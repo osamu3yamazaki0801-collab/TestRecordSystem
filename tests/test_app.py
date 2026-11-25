@@ -223,36 +223,77 @@ class LedgerAppTests(unittest.TestCase):
         self.assertEqual(user_client.get("/api/workflow-inbox").status_code, 401)
         self.assertEqual(new_password_login.get("/api/workflow-inbox").status_code, 401)
 
-    def test_trial_number_allocator_skips_existing_and_reserves_consecutive_numbers(self):
+    def test_trial_number_allocator_fills_lowest_gap_and_uses_draft_numbers(self):
         self.login()
         url = "/api/trial-numbers/next"
         self.assertEqual(self.client.post(url).status_code, 400)
-        prefix = date.today().strftime("%y%m")
-        existing = self.client.post(
-            "/api/records",
-            data=self.record_data(trialNo=f"{prefix}0005"),
-            headers={"X-CSRF-Token": self.csrf_token},
-        )
-        self.assertEqual(existing.status_code, 201)
+        prefix = f"{date.today():%y}0"
+        with closing(sqlite3.connect(self.app.config["DATABASE_PATH"])) as connection, connection:
+            connection.executemany(
+                """
+                INSERT INTO records (trial_no, project_name, product_no, registration_date, manager)
+                VALUES (?, '', '', ?, '担当者')
+                """,
+                [
+                    (f"{prefix}00000", date.today().strftime("%Y%m%d")),
+                    (f"{prefix}00002", date.today().strftime("%Y%m%d")),
+                ],
+            )
 
         first = self.client.post(url, headers={"X-CSRF-Token": self.csrf_token})
-        second = self.client.post(url, headers={"X-CSRF-Token": self.csrf_token})
+        second = self.client.post(
+            url,
+            json={"occupiedTrialNumbers": [first.json["trialNo"]]},
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
 
         self.assertEqual(first.status_code, 201)
-        self.assertEqual(first.json["trialNo"], f"{prefix}0006")
+        self.assertEqual(first.json["trialNo"], f"{prefix}00001")
         self.assertEqual(second.status_code, 201)
-        self.assertEqual(second.json["trialNo"], f"{prefix}0007")
+        self.assertEqual(second.json["trialNo"], f"{prefix}00003")
 
-    def test_trial_number_allocator_rejects_numbers_after_monthly_limit(self):
+    def test_trial_number_allocator_does_not_treat_unregistered_reservations_as_used(self):
         self.login()
-        prefix = date.today().strftime("%y%m")
+        prefix = f"{date.today():%y}0"
+        with closing(sqlite3.connect(self.app.config["DATABASE_PATH"])) as connection, connection:
+            connection.execute(
+                "INSERT INTO trial_number_reservations (trial_no, reserved_by) VALUES (?, 'operator')",
+                (f"{prefix}00000",),
+            )
+
+        response = self.client.post(
+            "/api/trial-numbers/next",
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json["trialNo"], f"{prefix}00000")
+
+    def test_trial_number_allocator_starts_at_zero_for_each_year(self):
+        self.login()
+        response = self.client.post(
+            "/api/trial-numbers/next",
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json["trialNo"], f"{date.today():%y}000000")
+
+    def test_trial_number_allocator_rejects_numbers_after_yearly_limit(self):
+        self.login()
+        prefix = f"{date.today():%y}0"
         with closing(sqlite3.connect(self.app.config["DATABASE_PATH"])) as connection, connection:
             connection.execute(
                 """
+                WITH RECURSIVE serials(serial) AS (
+                    SELECT 0
+                    UNION ALL
+                    SELECT serial + 1 FROM serials WHERE serial < 99999
+                )
                 INSERT INTO records (trial_no, project_name, product_no, registration_date, manager)
-                VALUES (?, '', '', ?, '山田太郎')
+                SELECT printf(?, serial), '', '', ?, '担当者' FROM serials
                 """,
-                (f"{prefix}9999", date.today().strftime("%Y%m%d")),
+                (f"{prefix}%05d", date.today().strftime("%Y%m%d")),
             )
 
         response = self.client.post(
@@ -261,6 +302,24 @@ class LedgerAppTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 409)
+
+    def test_new_trial_results_preview_returns_csv_metadata(self):
+        self.assertEqual(
+            self.client.post("/api/trial-results/preview").status_code,
+            401,
+        )
+        self.login()
+
+        response = self.client.post(
+            "/api/trial-results/preview",
+            data={"resultFile": (io.BytesIO(SAMPLE_RESULTS_CSV.encode("utf-8-sig")), "result.csv")},
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["metadata"]["品名"], "PEX32RZ_SAMPLE")
+        self.assertEqual(response.json["metadata"]["仕様書番号"], "6G3RB652 Rev.4")
+        self.assertEqual(response.json["metadata"]["試験番号"], "1234567890")
 
     def test_register_and_search_shared_sqlite_records(self):
         self.login()
@@ -482,6 +541,7 @@ class LedgerAppTests(unittest.TestCase):
             ({"projectName": "制御", "trialNo": "T-002"}, ["T-002"]),
             ({"projectName": "制御", "productNo": "NO-MATCH"}, []),
             ({"projectName": "不存在"}, []),
+            ({"date": "2026-10-25"}, ["T-004", "T-003", "T-002", "T-001"]),
             ({"projectName": " "}, ["T-004", "T-003", "T-002", "T-001"]),
         ):
             with self.subTest(filters=filters):
@@ -560,6 +620,23 @@ class LedgerAppTests(unittest.TestCase):
                 )
                 self.assertEqual(response.status_code, 400)
         self.assertEqual(self.client.get("/api/records").json, [])
+
+    def test_registration_accepts_csv_metadata_characters(self):
+        self.login()
+        response = self.client.post(
+            "/api/records",
+            data=self.record_data(
+                trialNo="T-CSV-METADATA",
+                projectName="PEX32RZ_SAMPLE",
+                productNo="6G3RB652 Rev.4",
+            ),
+            headers={"X-CSRF-Token": self.csrf_token},
+        )
+
+        self.assertEqual(response.status_code, 201)
+        record = self.client.get("/api/records").json[0]
+        self.assertEqual(record["projectName"], "PEX32RZ_SAMPLE")
+        self.assertEqual(record["productNo"], "6G3RB652 Rev.4")
 
     def test_jumper_checks_persist_and_are_independent(self):
         self.login()
@@ -1807,8 +1884,13 @@ class LedgerAppTests(unittest.TestCase):
         )
         self.assertEqual(upload.status_code, 201)
         self.assertEqual([item["fileName"] for item in upload.json["files"]], ["results.csv"])
+        self.assertEqual(upload.json["projectName"], "PEX32RZ_SAMPLE")
+        self.assertEqual(upload.json["productNo"], "6G3RB652 Rev.4")
         file_id = upload.json["files"][0]["id"]
-        self.assertEqual(self.client.get("/api/records").json[0]["files"], upload.json["files"])
+        record = self.client.get("/api/records").json[0]
+        self.assertEqual(record["files"], upload.json["files"])
+        self.assertEqual(record["projectName"], "PEX32RZ_SAMPLE")
+        self.assertEqual(record["productNo"], "6G3RB652 Rev.4")
 
         duplicate = self.client.post(
             f"/api/records/{record_id}/files",

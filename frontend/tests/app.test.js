@@ -193,7 +193,7 @@ function makeSearchFetch(calls, createResponse, dashboardSummary, workflowTasks 
     }
     if (parsedUrl.pathname === '/api/trial-numbers/next' && method === 'POST') {
       nextTrialNumber += 1;
-      return response({ trialNo: `2611${String(nextTrialNumber).padStart(4, '0')}` }, 201);
+      return response({ trialNo: `260${String(nextTrialNumber - 1).padStart(5, '0')}` }, 201);
     }
     if (parsedUrl.pathname === '/api/records' && method === 'POST') {
       const result = createResponse(options.body);
@@ -206,6 +206,16 @@ function makeSearchFetch(calls, createResponse, dashboardSummary, workflowTasks 
       return result.httpStatus
         ? response(result.data, result.httpStatus)
         : response(result, 201);
+    }
+    if (parsedUrl.pathname === '/api/trial-results/preview' && method === 'POST') {
+      return response({
+        metadata: {
+          品名: 'CSV品名',
+          仕様書番号: 'SPEC-CSV-001',
+          試験番号: 'CSV番号',
+        },
+        sections: [],
+      });
     }
     if (parsedUrl.pathname === '/api/records') {
       return response([]);
@@ -231,7 +241,7 @@ test('the dashboard provides registration and search buttons side by side', asyn
 test('the in-app workflow inbox shows tasks assigned to the signed-in user', async () => {
   const task = {
     recordId: 42,
-    trialNo: '26110042',
+    trialNo: '26000042',
     projectName: '案件',
     stageName: '調査',
     assigneeName: '山田太郎',
@@ -294,28 +304,39 @@ test('the registration form visibly marks trial number and manager as required',
     const requiredFields = [...app.dom.window.document.querySelectorAll('.registration-page .required-badge')]
       .map((badge) => badge.parentElement.textContent.replace('必須', '').trim());
     assert.deepEqual(requiredFields, ['試験番号', '担当者']);
+    const fieldOrder = [...app.dom.window.document.querySelectorAll('.registration-page .form-grid > .field')]
+      .map((field) => field.className);
+    assert.deepEqual(fieldOrder, [
+      'field record-field-trial-no',
+      'field record-field-manager',
+      'field record-field-result-file result-file-picker',
+      'field record-field-project-name',
+      'field record-field-product-no',
+      'field record-field-registration-date',
+    ]);
+    assert.equal(
+      app.dom.window.document.querySelector('input[name="registrationDate"]').value,
+      `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-${String(new Date().getDate()).padStart(2, '0')}`,
+    );
   } finally {
     await app.cleanup();
   }
 });
 
-test('each registration row can reserve the next trial number', async () => {
+test('registration rows automatically reserve the lowest available trial number', async () => {
   const calls = [];
   const app = await mountApp('http://localhost/', makeSearchFetch(calls, () => ({})));
   try {
     await click(app.dom, findNav(app.dom, '記録の登録'));
     await waitFor(() => app.dom.window.document.querySelector('input[name="trialNo"]'), 'registration form was not rendered');
     const firstNumber = app.dom.window.document.querySelector('input[name="trialNo"]');
-    const firstButton = app.dom.window.document.querySelector('.trial-number-controls button');
-    await click(app.dom, firstButton);
-    await waitFor(() => firstNumber.value === '26110001', 'first number was not allocated');
+    await waitFor(() => firstNumber.value === '26000000', 'first number was not allocated');
+    assert.equal(app.dom.window.document.querySelector('.trial-number-controls button'), null);
 
     await click(app.dom, [...app.dom.window.document.querySelectorAll('button')].find((button) => button.textContent === '記録を追加'));
     await waitFor(() => app.dom.window.document.querySelector('input[name="trialNo-1"]'), 'second registration row was not added');
     const secondNumber = app.dom.window.document.querySelector('input[name="trialNo-1"]');
-    const secondButton = app.dom.window.document.querySelectorAll('.trial-number-controls button')[1];
-    await click(app.dom, secondButton);
-    await waitFor(() => secondNumber.value === '26110002', 'second number was not allocated');
+    await waitFor(() => secondNumber.value === '26000001', 'second number was not allocated');
     assert.equal(calls.filter((call) => call.path === '/api/trial-numbers/next' && call.method === 'POST').length, 2);
   } finally {
     await app.cleanup();
@@ -390,6 +411,11 @@ test('a successful single registration uploads its CSV and navigates to search',
     await selectValue(app.dom, app.dom.window.document.querySelector('select[name="manager"]'), record.manager);
     await chooseFile(app.dom, app.dom.window.document.querySelector('input[type="file"]'), file.fileName);
     await waitFor(
+      () => app.dom.window.document.querySelector('input[name="projectName"]').value === 'CSV品名'
+        && app.dom.window.document.querySelector('input[name="productNo"]').value === 'SPEC-CSV-001',
+      'CSV metadata was not copied to the registration fields',
+    );
+    await waitFor(
       () => app.dom.window.document.querySelector('.record-field-result-file .selected-file-name')?.textContent === file.fileName,
       'selected CSV filename was not shown',
     );
@@ -405,6 +431,10 @@ test('a successful single registration uploads its CSV and navigates to search',
     );
     assert.ok(findNav(app.dom, '記録の検索').classList.contains('active'));
     assert.ok(app.dom.window.document.querySelector('.search-record-row').textContent.includes(record.trialNo));
+    assert.match(
+      app.dom.window.document.querySelector('.search-record-row').textContent,
+      /\d{4}-\d{2}-\d{2}/,
+    );
     assert.ok(calls.some((call) => call.path === '/api/records' && call.method === 'POST'));
   } finally {
     await app.cleanup();
@@ -475,7 +505,7 @@ test('batch registration associates each selected CSV with its input row', async
   }
 });
 
-test('opening a CSV record selects the trial results tab and renders imported data', async () => {
+test('opening a CSV record starts on trial information and can render imported data', async () => {
   const record = {
     id: 17,
     trialNo: 'T-017',
@@ -605,9 +635,12 @@ test('opening a CSV record selects the trial results tab and renders imported da
   const app = await mountApp('http://localhost/?recordId=17', fetchMock);
   try {
     await waitFor(
-      () => app.dom.window.document.querySelector('.record-detail-tabs [aria-selected="true"]')?.textContent === '試験結果',
-      'CSV records should open on the trial results tab',
+      () => app.dom.window.document.querySelector('.record-detail-tabs [aria-selected="true"]')?.textContent === '試験情報',
+      'CSV records should open on the trial information tab',
     );
+    const trialResultsTab = [...app.dom.window.document.querySelectorAll('.record-detail-tabs [role="tab"]')]
+      .find((tab) => tab.textContent === '試験結果');
+    await click(app.dom, trialResultsTab);
     await waitFor(
       () => app.dom.window.document.body.textContent.includes('B5-1-01'),
       'parsed CSV rows were not rendered',

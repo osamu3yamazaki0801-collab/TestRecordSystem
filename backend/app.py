@@ -5,9 +5,11 @@ import os
 import re
 import secrets
 import sqlite3
+import threading
+import time
 import unicodedata
 from contextlib import closing
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from functools import wraps
 from io import BytesIO
 from pathlib import Path
@@ -34,6 +36,10 @@ MAX_MANUAL_TESTS = 50
 MAX_MANUAL_TEST_ITEMS = 200
 MAX_SOFTWARE_SECTIONS = 20
 MAX_SOFTWARE_ROWS = 50
+DEFAULT_BACKUP_INTERVAL_SECONDS = 24 * 60 * 60
+DEFAULT_BACKUP_CHECK_INTERVAL_SECONDS = 60 * 60
+DEFAULT_BACKUP_RETENTION_COUNT = 7
+BACKUP_LOCK = threading.Lock()
 DEFAULT_BOARD_DEFAULTS = [
     {"name": name, "serialNumber": ""}
     for name in (
@@ -119,6 +125,101 @@ INSERTION_KEY_CONNECTORS = BACKBOARD_INSERTION_KEY_CONNECTORS + [
     )
 ]
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def create_database_backup(
+    database_path,
+    backup_directory,
+    retention_count=DEFAULT_BACKUP_RETENTION_COUNT,
+    now=None,
+):
+    source_path = Path(database_path)
+    backup_path = Path(backup_directory)
+    if not source_path.is_file():
+        raise FileNotFoundError(f"バックアップ元DBが見つかりません: {source_path}")
+    if retention_count < 1:
+        raise ValueError("バックアップ保持世代数は1以上にしてください。")
+
+    backup_path.mkdir(parents=True, exist_ok=True)
+    current_time = now or datetime.now()
+    file_stem = f"{source_path.stem}-{current_time:%Y%m%d-%H%M%S-%f}"
+    destination_path = backup_path / f"{file_stem}.sqlite3"
+    temporary_path = backup_path / f"{file_stem}.tmp"
+
+    with BACKUP_LOCK:
+        try:
+            with closing(sqlite3.connect(source_path, timeout=10)) as source:
+                with closing(sqlite3.connect(temporary_path)) as destination:
+                    source.backup(destination)
+                    integrity = destination.execute("PRAGMA integrity_check").fetchone()[0]
+                    if integrity != "ok":
+                        raise sqlite3.DatabaseError(
+                            f"バックアップDBの整合性確認に失敗しました: {integrity}"
+                        )
+            temporary_path.replace(destination_path)
+        except Exception:
+            temporary_path.unlink(missing_ok=True)
+            raise
+
+        backups = sorted(
+            backup_path.glob(f"{source_path.stem}-*.sqlite3"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        for expired_backup in backups[retention_count:]:
+            expired_backup.unlink()
+
+    return destination_path
+
+
+def database_backup_is_due(database_path, backup_directory, interval_seconds):
+    backup_path = Path(backup_directory)
+    if not backup_path.is_dir():
+        return True
+    backups = list(backup_path.glob(f"{Path(database_path).stem}-*.sqlite3"))
+    if not backups:
+        return True
+    newest_backup = max(backups, key=lambda path: path.stat().st_mtime)
+    return time.time() - newest_backup.stat().st_mtime >= interval_seconds
+
+
+def run_due_database_backup(app):
+    if not database_backup_is_due(
+        app.config["DATABASE_PATH"],
+        app.config["DATABASE_BACKUP_PATH"],
+        app.config["DATABASE_BACKUP_INTERVAL_SECONDS"],
+    ):
+        return None
+    backup_path = create_database_backup(
+        app.config["DATABASE_PATH"],
+        app.config["DATABASE_BACKUP_PATH"],
+        app.config["DATABASE_BACKUP_RETENTION_COUNT"],
+    )
+    app.logger.info("SQLite database backup created: %s", backup_path)
+    return backup_path
+
+
+def start_database_backup_worker(app):
+    try:
+        run_due_database_backup(app)
+    except Exception:
+        app.logger.exception("SQLite database backup failed")
+
+    def worker():
+        while True:
+            time.sleep(app.config["DATABASE_BACKUP_CHECK_INTERVAL_SECONDS"])
+            try:
+                run_due_database_backup(app)
+            except Exception:
+                app.logger.exception("Scheduled SQLite database backup failed")
+
+    thread = threading.Thread(
+        target=worker,
+        name="sqlite-backup-worker",
+        daemon=True,
+    )
+    thread.start()
+    return thread
 
 
 def appearance_check_settings(items):
@@ -583,6 +684,28 @@ def create_app(test_config=None):
         DATABASE_PATH=os.environ.get(
             "LEDGER_DATABASE_PATH",
             str(PROJECT_ROOT / "instance" / "trial-ledger.sqlite3"),
+        ),
+        DATABASE_BACKUP_PATH=os.environ.get(
+            "LEDGER_BACKUP_PATH",
+            str(PROJECT_ROOT / "instance" / "backups"),
+        ),
+        DATABASE_BACKUP_INTERVAL_SECONDS=int(
+            os.environ.get(
+                "LEDGER_BACKUP_INTERVAL_SECONDS",
+                str(DEFAULT_BACKUP_INTERVAL_SECONDS),
+            )
+        ),
+        DATABASE_BACKUP_CHECK_INTERVAL_SECONDS=int(
+            os.environ.get(
+                "LEDGER_BACKUP_CHECK_INTERVAL_SECONDS",
+                str(DEFAULT_BACKUP_CHECK_INTERVAL_SECONDS),
+            )
+        ),
+        DATABASE_BACKUP_RETENTION_COUNT=int(
+            os.environ.get(
+                "LEDGER_BACKUP_RETENTION_COUNT",
+                str(DEFAULT_BACKUP_RETENTION_COUNT),
+            )
         ),
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",
@@ -2751,6 +2874,14 @@ def main():
         except (TypeError, ValueError):
             raise SystemExit("LEDGER_PASSWORD_HASHが無効です。READMEの手順で生成してください。") from None
     app = create_app()
+    for setting in (
+        "DATABASE_BACKUP_INTERVAL_SECONDS",
+        "DATABASE_BACKUP_CHECK_INTERVAL_SECONDS",
+        "DATABASE_BACKUP_RETENTION_COUNT",
+    ):
+        if app.config[setting] < 1:
+            raise SystemExit(f"{setting}は1以上に設定してください。")
+    start_database_backup_worker(app)
     host = os.environ.get("LEDGER_HOST", "127.0.0.1")
     port = int(os.environ.get("LEDGER_PORT", "8000"))
     serve(app, host=host, port=port)

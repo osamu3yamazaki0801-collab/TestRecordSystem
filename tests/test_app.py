@@ -1,16 +1,24 @@
 import io
 import json
+import os
 import sqlite3
 import tempfile
+import time
 import unittest
 from contextlib import closing
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from unittest.mock import patch
 
 from werkzeug.security import generate_password_hash
 
-from backend.app import MAX_FILE_SIZE, MAX_REQUEST_SIZE, create_app
+from backend.app import (
+    MAX_FILE_SIZE,
+    MAX_REQUEST_SIZE,
+    create_app,
+    create_database_backup,
+    database_backup_is_due,
+)
 from backend.trial_results import parse_trial_results
 
 
@@ -154,6 +162,56 @@ class LedgerAppTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 503)
         self.assertIn("npm run build", response.json["error"])
+
+    def test_database_backup_uses_online_copy_and_keeps_retention_count(self):
+        with closing(sqlite3.connect(self.app.config["DATABASE_PATH"])) as connection, connection:
+            connection.execute(
+                """
+                INSERT INTO records (
+                    trial_no, project_name, product_no, registration_date, manager
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                ("T-BACKUP", "バックアップ", "BACKUP-1", "20261125", "担当者"),
+            )
+        backup_directory = Path(self.temp_dir.name) / "backups"
+        created = [
+            create_database_backup(
+                self.app.config["DATABASE_PATH"],
+                backup_directory,
+                retention_count=2,
+                now=datetime(2026, 11, 25, 12, 0, second),
+            )
+            for second in range(3)
+        ]
+
+        self.assertEqual(len(list(backup_directory.glob("ledger-*.sqlite3"))), 2)
+        with closing(sqlite3.connect(created[-1])) as backup:
+            self.assertEqual(backup.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+            self.assertEqual(
+                backup.execute(
+                    "SELECT trial_no FROM records WHERE trial_no = 'T-BACKUP'"
+                ).fetchone()[0],
+                "T-BACKUP",
+            )
+
+    def test_database_backup_is_due_after_configured_interval(self):
+        backup_directory = Path(self.temp_dir.name) / "backups"
+        backup_directory.mkdir()
+        backup_file = backup_directory / "ledger-20261125.sqlite3"
+        backup_file.write_bytes(b"backup")
+
+        self.assertFalse(database_backup_is_due(
+            self.app.config["DATABASE_PATH"],
+            backup_directory,
+            86400,
+        ))
+        old_timestamp = time.time() - 86401
+        os.utime(backup_file, (old_timestamp, old_timestamp))
+        self.assertTrue(database_backup_is_due(
+            self.app.config["DATABASE_PATH"],
+            backup_directory,
+            86400,
+        ))
 
     def test_homepage_serves_react_build_and_assets(self):
         frontend_dist = Path(self.temp_dir.name) / "dist"

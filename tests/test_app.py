@@ -1025,9 +1025,14 @@ class LedgerAppTests(unittest.TestCase):
             {"name": "PWM85 基板 FPGA", "sdFormat": "XPLD0885", "version": "", "checksum": ""},
             {"name": "INF267 基板 FPGA", "sdFormat": "XPLD0856", "version": "", "checksum": ""},
         ])
+        self.assertEqual(equipment["macAddresses"], [
+            {"port": "Ether0", "octets": ["EC", "21", "25", "", "", ""]},
+            {"port": "Ether1", "octets": ["EC", "21", "25", "", "", ""]},
+        ])
         equipment["boards"][0]["serialNumber"] = "251100020A"
         equipment["instruments"][0] = {"name": "オシロスコープ", "managementNo": "AA00432", "testItems": "B9, B10"}
         equipment["software"][0].update(version="9055", checksum="CB2FA46")
+        equipment["macAddresses"][0]["octets"] = ["EC", "21", "25", "3c", "4D", "5e"]
         self.assertEqual(equipment["shippingSoftware"], [
             {"name": "", "sdFormat": "", "version": "", "checksum": ""},
         ])
@@ -1038,7 +1043,24 @@ class LedgerAppTests(unittest.TestCase):
         )
         response = self.client.put(url, json=equipment, headers={"X-CSRF-Token": self.csrf_token})
         self.assertEqual(response.status_code, 200)
+        equipment["macAddresses"][0]["octets"] = [octet.upper() for octet in equipment["macAddresses"][0]["octets"]]
         self.assertEqual(response.json, equipment)
+        invalid_mac = json.loads(json.dumps(equipment))
+        invalid_mac["macAddresses"][0]["octets"][3] = "GG"
+        self.assertEqual(
+            self.client.put(
+                url, json=invalid_mac, headers={"X-CSRF-Token": self.csrf_token},
+            ).status_code,
+            400,
+        )
+        invalid_prefix = json.loads(json.dumps(equipment))
+        invalid_prefix["macAddresses"][0]["octets"][0] = "00"
+        self.assertEqual(
+            self.client.put(
+                url, json=invalid_prefix, headers={"X-CSRF-Token": self.csrf_token},
+            ).status_code,
+            400,
+        )
         restarted = create_app(dict(self.app.config)).test_client()
         with restarted.session_transaction() as session:
             session["username"] = "operator"
@@ -1073,6 +1095,7 @@ class LedgerAppTests(unittest.TestCase):
         ).json["id"]
         url = f"/api/records/{record_id}/equipment"
         legacy = self.client.get(url).json
+        del legacy["macAddresses"]
         del legacy["shippingSoftware"]
         del legacy["shippingSoftwareSameAsTrial"]
         legacy["software"][0]["version"] = "LEGACY"
@@ -1092,6 +1115,10 @@ class LedgerAppTests(unittest.TestCase):
             connection.commit()
 
         expanded = self.client.get(url).json
+        self.assertEqual(expanded["macAddresses"], [
+            {"port": "Ether0", "octets": ["EC", "21", "25", "", "", ""]},
+            {"port": "Ether1", "octets": ["EC", "21", "25", "", "", ""]},
+        ])
         self.assertIs(expanded["shippingSoftwareSameAsTrial"], False)
         self.assertEqual(expanded["software"][0]["version"], "LEGACY")
         self.assertTrue(all(
@@ -1107,6 +1134,7 @@ class LedgerAppTests(unittest.TestCase):
         response = self.client.put(
             url, json={
                 **legacy, "shippingSoftware": expanded["shippingSoftware"],
+                "macAddresses": expanded["macAddresses"],
                 "shippingSoftwareSameAsTrial": expanded["shippingSoftwareSameAsTrial"],
             },
             headers={"X-CSRF-Token": self.csrf_token},
@@ -1142,7 +1170,8 @@ class LedgerAppTests(unittest.TestCase):
 
         loaded = self.client.get(url).json
         self.assertEqual(set(loaded), {
-            "boards", "instruments", "software", "shippingSoftware", "shippingSoftwareSameAsTrial",
+            "boards", "instruments", "software", "macAddresses", "shippingSoftware",
+            "shippingSoftwareSameAsTrial",
         })
         self.assertEqual(loaded["shippingSoftware"], [{
             "name": "アプリソフト", "sdFormat": "TEST0306", "version": "1.2", "checksum": "ABC",

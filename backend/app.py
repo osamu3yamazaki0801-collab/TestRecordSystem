@@ -102,6 +102,10 @@ DEFAULT_SOFTWARE_SECTIONS = [
         ],
     },
 ]
+DEFAULT_MAC_ADDRESSES = [
+    {"port": "Ether0", "octets": ["EC", "21", "25", "", "", ""]},
+    {"port": "Ether1", "octets": ["EC", "21", "25", "", "", ""]},
+]
 BACKBOARD_INSERTION_KEY_CONNECTORS = [
     {"name": "P31", "displayName": "P31", "positions": ["E", "F", "G", "M"]},
     {"name": "P32", "displayName": "P32", "positions": ["E", "F", "H", "L"]},
@@ -523,6 +527,10 @@ def empty_equipment(
             for section in software_sections
             for row in section["rows"]
         ],
+        "macAddresses": [
+            {"port": row["port"], "octets": list(row["octets"])}
+            for row in DEFAULT_MAC_ADDRESSES
+        ],
         "shippingSoftware": [{"name": "", "sdFormat": "", "version": "", "checksum": ""}],
         "shippingSoftwareSameAsTrial": False,
     }
@@ -544,6 +552,26 @@ def validate_equipment(
         if group == "shippingSoftwareSameAsTrial":
             if not isinstance(data[group], bool):
                 return "「試験時と同じソフト」はチェック状態で指定してください。"
+            continue
+        if group == "macAddresses":
+            if not isinstance(data[group], list) or len(data[group]) != len(expected_rows):
+                return "MACアドレスの行数が正しくありません。"
+            for index, row in enumerate(data[group]):
+                expected = expected_rows[index]
+                if (
+                    not isinstance(row, dict)
+                    or row.keys() != expected.keys()
+                    or row["port"] != expected["port"]
+                    or not isinstance(row["octets"], list)
+                    or len(row["octets"]) != len(expected["octets"])
+                    or row["octets"][:3] != expected["octets"][:3]
+                    or any(
+                        not isinstance(octet, str)
+                        or (octet != "" and not re.fullmatch(r"[0-9A-Fa-f]{2}", octet))
+                        for octet in row["octets"]
+                    )
+                ):
+                    return "MACアドレスは各バイトを空欄または2桁の16進数で入力してください。"
             continue
         rows = data[group]
         if group == "boards":
@@ -608,6 +636,25 @@ def normalize_equipment(
         }
         for default in template["software"]
     ]
+    saved_mac_addresses = {
+        row.get("port"): row
+        for row in data.get("macAddresses", [])
+        if isinstance(row, dict) and isinstance(row.get("octets"), list)
+    }
+    normalized["macAddresses"] = []
+    for default in template["macAddresses"]:
+        octets = saved_mac_addresses.get(default["port"], default)["octets"]
+        normalized["macAddresses"].append({
+            "port": default["port"],
+            "octets": [
+                default["octets"][index]
+                if index < 3
+                else octets[index].upper()
+                if index < len(octets) and isinstance(octets[index], str)
+                else ""
+                for index in range(6)
+            ],
+        })
     saved_shipping = data["shippingSoftware"][0] if data.get("shippingSoftware") else {}
     normalized["shippingSoftware"] = [{
         field: saved_shipping.get(field, default)

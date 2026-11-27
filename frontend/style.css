@@ -2109,6 +2109,51 @@ tbody tr:last-child td {
   width: 14%;
 }
 
+.mac-address-table-wrap {
+  width: fit-content;
+  max-width: 100%;
+}
+
+.mac-address-table {
+  width: 560px;
+  min-width: 560px;
+}
+
+.mac-address-table th:first-child {
+  width: 96px;
+}
+
+.mac-address-table tbody th {
+  color: var(--text);
+  background: #fff;
+  font-weight: normal;
+  text-align: center;
+}
+
+.mac-address-table td {
+  position: relative;
+  width: 77px;
+  padding: 4px;
+  text-align: center;
+}
+
+.mac-address-table td:not(:last-child)::after {
+  position: absolute;
+  top: 50%;
+  right: -4px;
+  z-index: 1;
+  content: ":";
+  transform: translateY(-50%);
+}
+
+.mac-address-table input {
+  padding-right: 2px;
+  padding-left: 2px;
+  text-align: center;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  text-transform: uppercase;
+}
+
 .equipment-table--shippingSoftware th:nth-child(2) {
   width: 15.4%;
 }

@@ -743,8 +743,11 @@ function App() {
       }
       if (['boards', 'instruments', 'software', 'shippingSoftware'].some((group) => detailEquipment[group].some((row) => (
         Object.values(row).some((value) => typeof value !== 'string' || value.length > 100)
-      )))) {
-        setRegisterMessage({ text: '機器情報の各項目は100文字以内で入力してください。', type: 'error' });
+      ))) || (detailEquipment.macAddresses || []).some((row) => (
+        row.octets.length !== 6
+        || row.octets.some((octet) => typeof octet !== 'string' || (octet !== '' && !/^[0-9A-Fa-f]{2}$/.test(octet)))
+      ))) {
+        setRegisterMessage({ text: '機器情報の各項目、またはMACアドレスの形式が正しくありません。', type: 'error' });
         return;
       }
       formData.set('equipment', JSON.stringify(detailEquipment));
@@ -1703,6 +1706,7 @@ function RecordDetails({ record, onClose, recordDirty, registering, registration
                 </div>
               ) : <Message>読み込み中...</Message>}
               <EquipmentForm equipment={equipment} softwareSections={softwareSections} setEquipment={setEquipment} disabled={registering} onDirty={onDirty} groupKeys={['software']} />
+              <MacAddressInspection equipment={equipment} setEquipment={setEquipment} disabled={registering} onDirty={onDirty} />
               <section className="power-board-report-section" aria-labelledby="power-board-report-title">
                 <h3 id="power-board-report-title">電源基板試験成績票</h3>
                 {record.powerBoardReport ? (
@@ -2280,6 +2284,65 @@ function EquipmentForm({ equipment, instrumentChoices = [], softwareSections = [
         ))}
       </fieldset>
     </div>
+  );
+}
+
+const DEFAULT_MAC_ADDRESSES = [
+  { port: 'Ether0', octets: ['EC', '21', '25', '', '', ''] },
+  { port: 'Ether1', octets: ['EC', '21', '25', '', '', ''] },
+];
+
+function MacAddressInspection({ equipment, setEquipment, disabled, onDirty }) {
+  const addresses = equipment?.macAddresses || DEFAULT_MAC_ADDRESSES;
+
+  function changeOctet(port, octetIndex, value) {
+    const normalizedValue = value.replace(/[^0-9a-f]/gi, '').slice(0, 2).toUpperCase();
+    setEquipment((current) => ({
+      ...current,
+      macAddresses: (current.macAddresses || DEFAULT_MAC_ADDRESSES).map((row) => (
+        row.port === port
+          ? { ...row, octets: row.octets.map((octet, index) => index === octetIndex ? normalizedValue : octet) }
+          : row
+      )),
+    }));
+    onDirty();
+  }
+
+  return (
+    <section className="mac-address-inspection" aria-labelledby="mac-address-heading">
+      <h3 id="mac-address-heading" className="jumper-heading">MACアドレス</h3>
+      <div className="equipment-table-wrap mac-address-table-wrap">
+        <table className="equipment-table mac-address-table" aria-label="MACアドレスの確認" aria-busy={disabled}>
+          <thead>
+            <tr>
+              <th scope="col">ポート</th>
+              <th scope="col" colSpan="6">MACアドレス</th>
+            </tr>
+          </thead>
+          <tbody>
+            {addresses.map((row) => (
+              <tr key={row.port}>
+                <th scope="row">{row.port}</th>
+                {row.octets.map((octet, octetIndex) => (
+                  <td key={octetIndex}>
+                    <input
+                      type="text"
+                      inputMode="text"
+                      aria-label={`${row.port} MACアドレス ${octetIndex + 1}バイト目`}
+                      value={octet}
+                      maxLength={2}
+                      pattern="[0-9A-Fa-f]{2}"
+                      disabled={disabled || octetIndex < 3}
+                      onChange={(event) => changeOctet(row.port, octetIndex, event.target.value)}
+                    />
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
   );
 }
 

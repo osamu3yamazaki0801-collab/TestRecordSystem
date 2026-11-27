@@ -1139,8 +1139,19 @@ test('appearance inspection checks cancel, save and retain input on failure with
     const panel = document.getElementById('record-detail-panel-1');
     assert.deepEqual(
       [...panel.querySelectorAll('h3')].map((heading) => heading.textContent),
-      ['外観確認', '誤挿入キー確認', 'ジャンパ設定', 'インストールソフト', 'PLDバージョン', '電源基板試験成績票'],
+      ['外観確認', '誤挿入キー確認', 'ジャンパ設定', 'インストールソフト', 'PLDバージョン', 'MACアドレス', '電源基板試験成績票'],
     );
+    const macTable = panel.querySelector('.mac-address-table');
+    assert.deepEqual([...macTable.tBodies[0].rows].map((row) => row.cells[0].textContent), ['Ether0', 'Ether1']);
+    assert.equal(macTable.querySelectorAll('tbody input').length, 12);
+    assert.deepEqual(
+      [...macTable.querySelectorAll('tbody tr:first-child input')].map((input) => input.value),
+      ['EC', '21', '25', '', '', ''],
+    );
+    assert.ok([...macTable.querySelectorAll('tbody input')].filter((_, index) => index % 6 < 3).every((input) => input.disabled));
+    const fourthMacOctet = macTable.querySelector('input[aria-label="Ether0 MACアドレス 4バイト目"]');
+    await enterText(app.dom, fourthMacOctet, 'ab');
+    assert.equal(fourthMacOctet.value, 'AB');
     const section = panel.querySelector('.appearance-inspection');
     assert.equal(panel.firstElementChild, section);
     const insertion = panel.querySelector('.insertion-key-inspection');
